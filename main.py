@@ -26,7 +26,7 @@ from datetime import datetime
 # from glob import glob
 
 import geopandas
-# from osgeo import gdal
+from osgeo import gdal
 import rasterio as rio
 import rioxarray as rxr
 # import earthaccess
