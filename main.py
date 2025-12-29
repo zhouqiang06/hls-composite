@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Tuple
 
 import pandas as pd
-import rasterio
 from maap.maap import MAAP
 from pystac import Asset, Catalog, CatalogType, Item
 from rasterio.session import AWSSession
@@ -29,7 +28,7 @@ import geopandas
 from osgeo import gdal
 import rasterio as rio
 import rioxarray as rxr
-# import earthaccess
+import earthaccess
 
 import dask.array as da
 # from dask.diagnostics import ProgressBar
@@ -423,7 +422,7 @@ def createVIstack(granlue_dir_df: list):
     # for index, g_rec in tqdm(granlue_dir_df.iterrows(), total=granlue_dir_df.shape[0]):
     for idx, g_rec in granlue_dir_df.iterrows():
         try:
-            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL)
+            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).astype(np.uint8)
         except:
             fmask = np.zeros((3660, 3660), dtype=np.uint8) + QA_FILL
         fmaskarr_by = mask_hls(fmask, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask == QA_FILL)
