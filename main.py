@@ -256,7 +256,7 @@ def saveGeoTiff(filename, data, template_file):
 def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL) -> np.ma.masked_array:
     for attempt in range(max_retries):
         try:
-            return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True, fill_value=fill_value).squeeze()
+            return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True, fill_value=fill_value).read(1).squeeze()
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed for {tif_path}: {e}")
             if attempt < max_retries - 1:
@@ -422,7 +422,8 @@ def createVIstack(granlue_dir_df: list):
     # for index, g_rec in tqdm(granlue_dir_df.iterrows(), total=granlue_dir_df.shape[0]):
     for idx, g_rec in granlue_dir_df.iterrows():
         try:
-            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).read(1)
+            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL)
+            print(type(fmask))
         except:
             fmask = np.zeros((3660, 3660), dtype=np.uint8) + QA_FILL
         fmaskarr_by = mask_hls(fmask, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask == QA_FILL)
