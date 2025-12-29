@@ -200,7 +200,8 @@ chunk_size = dict(band=1, x=1098, y=1098)
 def mask_hls(qa_arr, mask_list=['cloud', 'adj_cloud', 'cloud shadow']):
     # This function takes the HLS QA array as input and exports the cloud mask array. 
     # The mask_list assigns the QA conditions you would like to mask.
-    msk = np.zeros_like(qa_arr)#.astype(bool)
+    # msk = np.zeros_like(qa_arr)#.astype(bool)
+    msk = da.zeros_like(qa_arr, dtype=bool)
     for m in mask_list:
         if m in QA_BIT.keys():
             msk += (qa_arr & 1 << QA_BIT[m]) > 0
