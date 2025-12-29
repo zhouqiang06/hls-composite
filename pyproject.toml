@@ -13,6 +13,7 @@ dependencies = [
     "pyproj>=3.7.2",
     "pystac>=1.14.1",
     "rasterio>=1.4.3",
+    "rioxarray>=0.17.0",
     "rustac>=0.8.4",
     "shapely>=2.1.2",
 ]
