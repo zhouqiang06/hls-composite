@@ -42,6 +42,9 @@ logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("HLSPointTimeSeries")
 
 GDAL_CONFIG = {
+    "GDAL_HTTP_COOKIEFILE": "~/cookies.txt",
+    "GDAL_HTTP_COOKIEJAR": "~/cookies.txt",
+    "GDAL_HTTP_UNSAFESSL": 'YES',
     "CPL_TMPDIR": "/tmp",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF,GPKG",
     "GDAL_CACHEMAX": "512",
