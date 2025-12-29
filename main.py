@@ -256,7 +256,7 @@ def saveGeoTiff(filename, data, template_file):
 def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL) -> np.ma.masked_array:
     for attempt in range(max_retries):
         try:
-            return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True, fill_value=fill_value).squeeze()
+            return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True).squeeze()
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed for {tif_path}: {e}")
             if attempt < max_retries - 1:
