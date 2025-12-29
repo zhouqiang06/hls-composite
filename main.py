@@ -200,8 +200,7 @@ chunk_size = dict(band=1, x=1098, y=1098)
 def mask_hls(qa_arr, mask_list=['cloud', 'adj_cloud', 'cloud shadow']):
     # This function takes the HLS QA array as input and exports the cloud mask array. 
     # The mask_list assigns the QA conditions you would like to mask.
-    # msk = np.zeros_like(qa_arr)#.astype(bool)
-    msk = da.zeros_like(qa_arr, dtype=bool)
+    msk = np.zeros_like(qa_arr)#.astype(bool)
     for m in mask_list:
         if m in QA_BIT.keys():
             msk += (qa_arr & 1 << QA_BIT[m]) > 0
@@ -423,7 +422,7 @@ def createVIstack(granlue_dir_df: list):
     # for index, g_rec in tqdm(granlue_dir_df.iterrows(), total=granlue_dir_df.shape[0]):
     for idx, g_rec in granlue_dir_df.iterrows():
         try:
-            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).astype(np.uint8)
+            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).read(1)
         except:
             fmask = np.zeros((3660, 3660), dtype=np.uint8) + QA_FILL
         fmaskarr_by = mask_hls(fmask, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask == QA_FILL)
