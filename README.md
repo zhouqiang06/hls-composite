@@ -2,8 +2,6 @@
 
 ### MAAP DPS
 
-To run the algorithm via DPS, you can follow this example. Provide the S3 URI for an input spatial file using the `input_file` argument. This file will be read using `geopandas` then the records will be filtered down to the ones that intersect the HLS raster asset footprint for the selected MGRS tile.
-
 ```python
 from maap.maap import MAAP
 
