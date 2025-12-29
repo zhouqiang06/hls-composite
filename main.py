@@ -39,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
 logging.getLogger("botocore").setLevel(logging.WARNING)
-logger = logging.getLogger("HLSPointTimeSeries")
+logger = logging.getLogger("HLSComposite")
 
 # GDAL configurations used to successfully access LP DAAC Cloud Assets via vsicurl
 gdal.SetConfigOption('GDAL_HTTP_COOKIEFILE','~/cookies.txt')
@@ -254,29 +254,6 @@ def saveGeoTiff(filename, data, template_file):
         print(f"An error occurred: {e}")
 
 
-def fetch_single_asset(
-    asset_href: str,
-    direct_bucket_access: bool = False,
-)-> np.ndarray | None:
-    """
-    Fetch image from a single asset.
-    Returns image array.
-    """
-    try:
-        # Get session from credential manager if using direct bucket access
-        rasterio_env = {}
-        if direct_bucket_access:
-            rasterio_env["session"] = _credential_manager.get_session()
-
-        with rasterio.Env(**rasterio_env):
-            with rasterio.open(asset_href) as src:
-                return src.read(1)
-
-    except Exception as e:
-        logger.warning(f"Failed to read {asset_href}: {e}")
-        return None
-
-
 def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL) -> np.ma.masked_array:
     for attempt in range(max_retries):
         try:
@@ -313,7 +290,8 @@ def get_meta(file_path: str):
 
 
 def find_tile_bounds(tile: str):
-    gdf = geopandas.read_file(r"s3://maap-ops-workspace/shared/zhouqiang06/AuxData/Sentinel-2-Shapefile-Index-master/sentinel_2_index_shapefile.shp")
+    # gdf = geopandas.read_file(r"s3://maap-ops-workspace/shared/zhouqiang06/AuxData/Sentinel-2-Shapefile-Index-master/sentinel_2_index_shapefile.shp")
+    gdf = geopandas.read_file(r"/projects/my-public-bucket/AuxData/Sentinel-2-Shapefile-Index-master/sentinel_2_index_shapefile.shp")
     bounds_list = [np.round(c, 3) for c in gdf[gdf["Name"]==tile].bounds.values[0]]
     return tuple(bounds_list)
 
@@ -652,52 +630,6 @@ def run(tile: str, start_date: str, end_date: str, stat: str, save_dir: str, sea
     # print(f"Count array min ({CountComp.min()}), max ({CountComp.max()}), and shape ({CountComp.shape})")
     saveGeoTiff(out_file, CountComp, template_file=tmp_g_path)
 
-
-def get_stac_items(
-    mgrs_tile: str, start_datetime: datetime, end_datetime: datetime
-) -> list[Item]:
-    logger.info("querying HLS archive")
-    client = DuckdbClient(use_hive_partitioning=True)
-    client.execute(
-        """
-        CREATE OR REPLACE SECRET secret (
-             TYPE S3,
-             PROVIDER CREDENTIAL_CHAIN
-        );
-        """
-    )
-
-    items = []
-    for collection in HLS_COLLECTIONS:
-        items.extend(
-            client.search(
-                href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
-                datetime="/".join(
-                    dt.isoformat() for dt in [start_datetime, end_datetime]
-                ),
-                filter={
-                    "op": "and",
-                    "args": [
-                        {
-                            "op": "like",
-                            "args": [{"property": "id"}, f"%.T{mgrs_tile}.%"],
-                        },
-                        {
-                            "op": "between",
-                            "args": [
-                                {"property": "year"},
-                                start_datetime.year,
-                                end_datetime.year,
-                            ],
-                        },
-                    ],
-                },
-            )
-        )
-
-    logger.info(f"found {len(items)} items")
-
-    return [Item.from_dict(item) for item in items]
 
 
 if __name__ == "__main__":
