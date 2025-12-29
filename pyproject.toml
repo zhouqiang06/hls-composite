@@ -1,0 +1,36 @@
+[project]
+name = "hls-cloud-free-temporal-mosaic"
+description = "Generate cloud-free temporal mosaics from HLS data"
+readme = "README.md"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+dependencies = [
+    "dask>=2025.10.0",
+    "geopandas>=1.1.1",
+    "maap-py>=4.2.0",
+    "pyarrow>=22.0.0",
+    "pyproj>=3.7.2",
+    "pystac>=1.14.1",
+    "rasterio>=1.4.3",
+    "rustac>=0.8.4",
+    "shapely>=2.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "duckdb>=1.4.3",
+    "ipython>=9.6.0",
+    "jupyterlab>=4.4.10",
+    "matplotlib>=3.10.7",
+    "mypy>=1.18.2",
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.3",
+]
+
+[tool.pdm.version]
+source = "scm"
+
+[tool.ruff]
+
+[tool.ruff.format]
