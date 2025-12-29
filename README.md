@@ -10,10 +10,10 @@ maap = MAAP(maap_host="api.maap-project.org")
 jobs = []
 for tile in ["14VLQ", "18WXS", "16WFB", "26WMC", "19VDL"]:
     job = maap.submitJob(
-        algo_id="HLSPointTimeSeriesExtraction",
+        algo_id="HLSComposite",
         version="v0.2",
         identifier="test-run",
-        queue="maap-dps-worker-16gb",
+        queue="maap-dps-worker-64gb",
         tile=tile,
         start_datetime="2013-01-01",
         end_datetime="2025-10-31",
