@@ -41,10 +41,14 @@ logging.basicConfig(
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("HLSPointTimeSeries")
 
+# GDAL configurations used to successfully access LP DAAC Cloud Assets via vsicurl
+gdal.SetConfigOption('GDAL_HTTP_COOKIEFILE','~/cookies.txt')
+gdal.SetConfigOption('GDAL_HTTP_COOKIEJAR', '~/cookies.txt')
+gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN','EMPTY_DIR')
+gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS','TIF')
+gdal.SetConfigOption('GDAL_HTTP_UNSAFESSL', 'YES')
+
 GDAL_CONFIG = {
-    "GDAL_HTTP_COOKIEFILE": "~/cookies.txt",
-    "GDAL_HTTP_COOKIEJAR": "~/cookies.txt",
-    "GDAL_HTTP_UNSAFESSL": 'YES',
     "CPL_TMPDIR": "/tmp",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF,GPKG",
     "GDAL_CACHEMAX": "512",
