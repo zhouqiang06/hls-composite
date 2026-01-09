@@ -253,7 +253,110 @@ def saveGeoTiff(filename, data, template_file):
         print(f"An error occurred: {e}")
 
 
-def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL) -> np.ma.masked_array:
+
+def get_stac_items(
+    mgrs_tile: str, start_datetime: datetime, end_datetime: datetime
+) -> list[Item]:
+    logger.info("querying HLS archive")
+    client = DuckdbClient(use_hive_partitioning=True)
+    client.execute(
+        """
+        CREATE OR REPLACE SECRET secret (
+             TYPE S3,
+             PROVIDER CREDENTIAL_CHAIN
+        );
+        """
+    )
+
+    items = []
+    for collection in HLS_COLLECTIONS:
+        items.extend(
+            client.search(
+                href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
+                datetime="/".join(
+                    dt.isoformat() for dt in [start_datetime, end_datetime]
+                ),
+                filter={
+                    "op": "and",
+                    "args": [
+                        {
+                            "op": "like",
+                            "args": [{"property": "id"}, f"%.T{mgrs_tile}.%"],
+                        },
+                        {
+                            "op": "between",
+                            "args": [
+                                {"property": "year"},
+                                start_datetime.year,
+                                end_datetime.year,
+                            ],
+                        },
+                    ],
+                },
+            )
+        )
+
+    logger.info(f"found {len(items)} items")
+
+    return [Item.from_dict(item) for item in items]
+
+
+def fetch_single_asset(
+    asset_href: str,
+    fill_value=SR_FILL,
+    direct_bucket_access: bool = False,
+):
+    """
+    Fetch data from a single asset.
+    """
+    try:
+        # Get session from credential manager if using direct bucket access
+        rasterio_env = {}
+        if direct_bucket_access:
+            rasterio_env["session"] = _credential_manager.get_session()
+
+        with rio.Env(**rasterio_env):
+            # return rxr.open_rasterio(asset_href, lock=False, chunks=chunk_size, driver='GTiff').squeeze()
+            with rio.open(asset_href) as src:
+                return da.from_array(src.read(1), chunks=chunk_size)
+            #     raster_crs = src.crs.to_string()
+            #     xs_4326, ys_4326 = zip(*coords_4326)
+            #     xs_proj, ys_proj = transform("EPSG:4326", raster_crs, xs_4326, ys_4326)
+            #     coords_proj = list(zip(xs_proj, ys_proj))
+
+            #     values = list(src.sample(coords_proj))
+
+            #     return item_id, band_name, [v[0] for v in values]
+
+    except Exception as e:
+        logger.warning(f"Failed to read {asset_href}: {e}")
+        return np.full((3660, 3660), fill_value)
+
+
+def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL, access_type="external"):
+    for attempt in range(max_retries):
+        try:
+            return fetch_single_asset(
+                asset_href=asset_href,
+                fill_value=fill_value,
+                direct_bucket_access=(access_type == "direct"),
+            )
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = delay * (2**attempt)
+                logger.warning(
+                    f"Link {asset_href} attempt {attempt + 1}/{max_retries} failed: {e}. "
+                    f"Retrying in {wait_time} seconds..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"All {max_retries} attempts failed for {asset_href}. Last error: {e}"
+                )
+                return np.zeros((3660, 3660)) + fill_value
+            
+
+def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL):
     for attempt in range(max_retries):
         try:
             return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True).squeeze()
@@ -266,7 +369,8 @@ def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_v
 
 
 def read_sr_band(tif_path: Path) -> np.ma.masked_array:
-    data = load_band_retry(tif_path, fill_value=SR_FILL)
+    # data = load_band_retry(tif_path, fill_value=SR_FILL)
+    data = fetch_with_retry(tif_path, fill_value=SR_FILL)
     return np.ma.masked_less_equal(data, 0)
 
 
@@ -423,7 +527,8 @@ def createVIstack(granlue_dir_df: list):
     # for index, g_rec in tqdm(granlue_dir_df.iterrows(), total=granlue_dir_df.shape[0]):
     for idx, g_rec in granlue_dir_df.iterrows():
         try:
-            fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).to_numpy().astype(np.uint8)
+            # fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).to_numpy().astype(np.uint8)
+            fmask = fetch_with_retry(g_rec.granule_path, fill_value=QA_FILL).to_numpy().astype(np.uint8)
         except:
             fmask = np.zeros((3660, 3660), dtype=np.uint8) + QA_FILL
         fmaskarr_by = mask_hls(fmask, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask == QA_FILL)
@@ -554,6 +659,23 @@ def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max
 
     return da.ma.masked_array(result, mask=all_nan_mask, fill_value=no_data_value)
 
+
+def createJulianDateHLS(file, height, width):
+    j_date = file.split('/')[-1].split('.')[3][4:7]
+    date_arr = np.full((height, width),j_date,dtype=np.float32)
+    return date_arr
+    
+# def JulianCompositeHLS(file_list, NDVItmp, BoolMask, height, width):
+#     JulianDateImages = [createJulianDateHLS(file_list[i], height, width) for i in range(len(file_list))]
+#     JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask)
+#     return JulianComposite
+
+def JulianComposite(file_list, NDVItmp, BoolMask, height, width):
+    JulianDateImages = [createJulianDateHLS(file_list[i], height, width) for i in range(len(file_list))]
+    JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask)
+    return JulianComposite
+
+
 def CollapseBands(inArr, NDVItmp, BoolMask):
     '''
     Inserts the bands as arrays (made earlier)
@@ -621,6 +743,13 @@ def run(tile: str, start_date: str, end_date: str, stat: str, save_dir: str, sea
         print(f"Saving {band} band.")
         arr = arr.compute()# / sr_scale
         saveGeoTiff(out_file, arr, template_file=tmp_g_path)
+
+    JULIANcomp = JulianComposite(granule_df_range, VItmp, BoolMask, 3660, 3660)
+    JULIANcomp = JULIANcomp.astype(np.int16)
+    out_file = os.path.join(out_dir, f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0.DOY.tif")
+    print(f"Saving DOY.")
+    JULIANcomp = JULIANcomp.compute()# / sr_scale
+    saveGeoTiff(out_file, JULIANcomp, template_file=tmp_g_path)
 
     # Get the pixelwise count of the valid data
     CountComp = da.sum((VIstack_ma != SR_FILL), axis=0) # -9999
