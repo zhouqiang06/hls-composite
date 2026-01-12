@@ -811,5 +811,5 @@ if __name__ == "__main__":
         end_date=args.end_date,
         stat="max",
         save_dir=output_dir,
-        search_source="earthaccess",
+        search_source=args.search_source,
     )
