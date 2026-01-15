@@ -23,7 +23,7 @@ mkdir -p output
 # INPUT_DIR=input
 OUTPUT_DIR=output
 
-input_filename=$(ls -d input/*)
+# input_filename=$(ls -d input/*)
 
 # Parse positional arguments (3 required, 2 optional)
 if [[ $# -lt 4 ]] || [[ $# -gt 5 ]]; then
