@@ -6,6 +6,7 @@ set -euo pipefail
 command -v curl >/dev/null 2>&1 || { 
     echo "Installing curl..."
     conda install curl
+    conda install earthaccess
 }
 
 # install uv
