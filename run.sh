@@ -36,8 +36,10 @@ fi
 tile="$1"
 start_date="$2"
 end_date="$3"
-search_source="$4"
-access_type="$5"
+stat="$4"
+percentile_value="$5"
+search_source="$6"
+access_type="$7"
 
 # Call the script using the absolute paths
 # Use the updated environment when calling 'uv run'
@@ -54,6 +56,8 @@ cmd=(
     --tile "${tile}"
     --start_date "${start_date}"
     --end_date "${end_date}"
+    --stat "${stat}"
+    --percentile_value "${percentile_value}"
     --output_dir "${OUTPUT_DIR}"
     --search_source "${search_source}"
     --access_type "${access_type}"
