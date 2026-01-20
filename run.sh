@@ -26,10 +26,9 @@ OUTPUT_DIR=output
 # input_filename=$(ls -d input/*)
 
 # Parse positional arguments (3 required, 2 optional)
-if [[ $# -lt 4 ]] || [[ $# -gt 5 ]]; then
+if [[ $# -lt 4 ]] || [[ $# -gt 8 ]]; then
     echo "Error: Expected 4-6 arguments, got $#"
-    echo "Usage: $0 <mgrs_tile> <start_date> <end_date> <output_dir>"
-    echo "  bands: space-separated list of band names (e.g., 'red green blue')"
+    echo "Usage: $0 <mgrs_tile> <start_date> <end_date> <stat> <percentile_value> <search_source> <access_type>"
     exit 1
 fi
 
