@@ -1,21 +1,5 @@
-"""Extract a values from an HLS time series for a set of points in a MGRS tile"""
-
-import argparse
-import json
-import logging
-import os
-import threading
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Tuple
-
-import pandas as pd
-from maap.maap import MAAP
-from pystac import Asset, Catalog, CatalogType, Item
-from rasterio.session import AWSSession
-from rustac import DuckdbClient
-
+#!/panfs/ccds02/nobackup/people/qzhou2/miniforge3/envs/hls_mamba/bin/python
+# import platform
 import os
 from pathlib import Path
 
@@ -24,15 +8,29 @@ import pandas as pd
 from datetime import datetime
 # from glob import glob
 
+import argparse
+import json
+import logging
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Tuple
+
 import geopandas
-from osgeo import gdal
+# from osgeo import gdal
 import rasterio as rio
 import rioxarray as rxr
 import earthaccess
 
 import dask.array as da
 # from dask.diagnostics import ProgressBar
+# from tqdm import tqdm
 
+from maap.maap import MAAP
+from pystac import Asset, Catalog, CatalogType, Item
+from rasterio.session import AWSSession
+from rustac import DuckdbClient
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
@@ -40,26 +38,22 @@ logging.basicConfig(
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("HLSComposite")
 
-# GDAL configurations used to successfully access LP DAAC Cloud Assets via vsicurl
-gdal.SetConfigOption('GDAL_HTTP_COOKIEFILE','~/cookies.txt')
-gdal.SetConfigOption('GDAL_HTTP_COOKIEJAR', '~/cookies.txt')
-gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN','EMPTY_DIR')
-gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS','TIF')
-gdal.SetConfigOption('GDAL_HTTP_UNSAFESSL', 'YES')
-
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
-    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF,GPKG",
-    "GDAL_CACHEMAX": "512",
-    "GDAL_INGESTED_BYTES_AT_OPEN": "32768",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF,GPKG,SHP,SHX,PRJ,DBF,JSON,GEOJSON",
+    # "GDAL_CACHEMAX": "512",
+    # "GDAL_INGESTED_BYTES_AT_OPEN": "32768",
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
     "GDAL_HTTP_MULTIPLEX": "YES",
     "GDAL_HTTP_VERSION": "2",
     "PYTHONWARNINGS": "ignore",
-    "VSI_CACHE": "TRUE",
-    "VSI_CACHE_SIZE": "536870912",
+    # "VSI_CACHE": "TRUE",
+    # "VSI_CACHE_SIZE": "536870912",
     "GDAL_NUM_THREADS": "ALL_CPUS",
+    "GDAL_HTTP_COOKIEFILE": str(Path.home() / "cookies.txt"),
+    "GDAL_HTTP_COOKIEJAR": str(Path.home() / "cookies.txt"),
+    "GDAL_HTTP_UNSAFESSL": "YES",
     # "CPL_DEBUG": "ON" if debug else "OFF",
     # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
@@ -122,6 +116,24 @@ FMASK_DTYPE = "uint8"
 NODATA = -9999
 FMASK_NODATA = 255
 
+sr_scale = 0.0001
+ang_scale = 0.01
+SR_FILL = -9999
+QA_FILL = 255 #FMASK_FILL
+
+common_bands = ["Blue","Green","Red","NIR_Narrow","SWIR1", "SWIR2", "Fmask"]
+
+L8_bandname = {"B01":"Coastal_Aerosol", "B02":"Blue", "B03":"Green", "B04":"Red", 
+               "B05":"NIR_Narrow", "B06":"SWIR 1", "B07":"SWIR 2", "B09":"Cirrus"}
+S2_bandname = {"B01":"Coastal_Aerosol", "B02":"Blue", "B03":"Green", "B04":"Red", 
+               "B8A":"NIR_Narrow", "B11":"SWIR1", "B12":"SWIR2", "B10":"Cirrus"}
+
+L8_name2index = {'Coastal_Aerosol': 'B01', 'Blue': 'B02', 'Green': 'B03', 'Red': 'B04',
+                 'NIR_Narrow': 'B05', 'SWIR1': 'B06', 'SWIR2': 'B07', 'Fmask': 'Fmask'}
+S2_name2index = {'Coastal_Aerosol': 'B01', 'Blue': 'B02', 'Green': 'B03', 'Red': 'B04', 
+                 'NIR_Edge1': 'B05', 'NIR_Edge2': 'B06', 'NIR_Edge3': 'B07', 
+                  'NIR_Broad': 'B08', 'NIR_Narrow': 'B8A', 'SWIR1': 'B11', 'SWIR2': 'B12', 'Fmask': 'Fmask'}
+
 BAND_MAPPING = {
     "HLSL30_2.0": {
         "coastal_aerosol": "B01",
@@ -166,25 +178,6 @@ DEFAULT_BANDS = [
 DEFAULT_RESOLUTION = 30
 
 
-
-common_bands = ["Blue","Green","Red","NIR_Narrow","SWIR1", "SWIR2", "Fmask"]
-
-L8_bandname = {"B01":"Coastal_Aerosol", "B02":"Blue", "B03":"Green", "B04":"Red", 
-               "B05":"NIR_Narrow", "B06":"SWIR 1", "B07":"SWIR 2", "B09":"Cirrus"}
-S2_bandname = {"B01":"Coastal_Aerosol", "B02":"Blue", "B03":"Green", "B04":"Red", 
-               "B8A":"NIR_Narrow", "B11":"SWIR1", "B12":"SWIR2", "B10":"Cirrus"}
-
-L8_name2index = {'Coastal_Aerosol': 'B01', 'Blue': 'B02', 'Green': 'B03', 'Red': 'B04',
-                 'NIR_Narrow': 'B05', 'SWIR1': 'B06', 'SWIR2': 'B07', 'Fmask': 'Fmask'}
-S2_name2index = {'Coastal_Aerosol': 'B01', 'Blue': 'B02', 'Green': 'B03', 'Red': 'B04', 
-                 'NIR_Edge1': 'B05', 'NIR_Edge2': 'B06', 'NIR_Edge3': 'B07', 
-                  'NIR_Broad': 'B08', 'NIR_Narrow': 'B8A', 'SWIR1': 'B11', 'SWIR2': 'B12', 'Fmask': 'Fmask'}
-
-sr_scale = 0.0001
-ang_scale = 0.01
-SR_FILL = -9999
-QA_FILL = 255 #FMASK_FILL
-
 QA_BIT = {'cirrus': 0,
 'cloud': 1,
 'adj_cloud': 2,
@@ -195,7 +188,8 @@ QA_BIT = {'cirrus': 0,
 'aerosol_h': 7
 }
 
-chunk_size = dict(band=1, x=1098, y=1098)
+chunk_size = dict(band=1, x=512, y=512)
+image_size = (3660, 3660)
 
 def mask_hls(qa_arr, mask_list=['cloud', 'adj_cloud', 'cloud shadow']):
     # This function takes the HLS QA array as input and exports the cloud mask array. 
@@ -220,38 +214,43 @@ def get_geo(filepath):
         return ds.transform, ds.crs
 
 
-def saveGeoTiff(filename, data, template_file):
+def saveGeoTiff(filename, data, template_file, access_type="external"):
     if not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     if os.path.exists(filename):
         os.remove(filename)
 
     if data.ndim == 2:
-        nband = 1
+        nband, height_data, width_data = 1, data.shape[0], data.shape[1]
     else:
-        nband = data.shape[2]
+        nband, height_data, width_data = data.shape[0], data.shape[1], data.shape[2]
     try:
-        with rio.open(template_file) as ds:
-            output_transform, output_crs = ds.transform, ds.crs
-            profile = {
-                        'driver': 'GTiff',
-                        'dtype': data.dtype,
-                        'count': nband,  # Number of bands
-                        'height': data.shape[0],
-                        'width': data.shape[1],
-                        'crs': output_crs,
-                        'transform': output_transform,
-                        'compress': 'lzw' # Optional: add compression
-                    }
-        with rio.open(filename, 'w', **profile) as dst:
-            if nband == 1:
-                dst.write(data, 1) # Write the array to band 1
-            else:
-                dst.write(data)
-        return True
+        # Get session from credential manager if using direct bucket access
+        rasterio_env = {}
+        if access_type == "direct":
+            rasterio_env["session"] = _credential_manager.get_session()
+        with rio.Env(**rasterio_env):
+            with rio.open(template_file) as ds:
+                output_transform, output_crs = ds.transform, ds.crs
+                profile = {
+                            'driver': 'GTiff',
+                            'dtype': data.dtype,
+                            'count': nband,  # Number of bands
+                            'height': height_data,
+                            'width': width_data,
+                            'crs': output_crs,
+                            'transform': output_transform,
+                            'compress': 'lzw' # Optional: add compression
+                        }
+            with rio.open(filename, 'w', **profile) as dst:
+                if nband == 1:
+                    dst.write(data, 1)
+                else:
+                    for i in range(nband):
+                        dst.write(data[i], i + 1)
+            return True
     except Exception as e:
         print(f"An error occurred: {e}")
-
 
 
 def get_stac_items(
@@ -319,21 +318,14 @@ def fetch_single_asset(
             # return rxr.open_rasterio(asset_href, lock=False, chunks=chunk_size, driver='GTiff').squeeze()
             with rio.open(asset_href) as src:
                 return da.from_array(src.read(1), chunks=chunk_size)
-            #     raster_crs = src.crs.to_string()
-            #     xs_4326, ys_4326 = zip(*coords_4326)
-            #     xs_proj, ys_proj = transform("EPSG:4326", raster_crs, xs_4326, ys_4326)
-            #     coords_proj = list(zip(xs_proj, ys_proj))
 
-            #     values = list(src.sample(coords_proj))
-
-            #     return item_id, band_name, [v[0] for v in values]
 
     except Exception as e:
         logger.warning(f"Failed to read {asset_href}: {e}")
-        return np.full((3660, 3660), fill_value)
+        return None # np.full((image_size[0], image_size[1]), fill_value)
 
 
-def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL, access_type="external"):
+def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 1, fill_value=SR_FILL, access_type="external"):
     for attempt in range(max_retries):
         try:
             return fetch_single_asset(
@@ -353,25 +345,7 @@ def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 5, fil
                 logger.error(
                     f"All {max_retries} attempts failed for {asset_href}. Last error: {e}"
                 )
-                return np.zeros((3660, 3660)) + fill_value
-            
-
-def load_band_retry(tif_path: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL):
-    for attempt in range(max_retries):
-        try:
-            return rxr.open_rasterio(tif_path, lock=False, chunks=chunk_size, masked=True).squeeze()
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed for {tif_path}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-    # raise RuntimeError(f"Failed to read {tif_path} after {max_retries} attempts")
-    return np.zeros((3660, 3660)) + fill_value
-
-
-def read_sr_band(tif_path: Path) -> np.ma.masked_array:
-    # data = load_band_retry(tif_path, fill_value=SR_FILL)
-    data = fetch_with_retry(tif_path, fill_value=SR_FILL)
-    return np.ma.masked_less_equal(data, 0)
+                return None # np.full((image_size[0], image_size[1]), fill_value)
 
 
 def apply_fmask(data: np.ndarray, fmask: np.ndarray) -> np.ma.masked_array:
@@ -400,7 +374,8 @@ def find_tile_bounds(tile: str):
     return tuple(bounds_list)
 
 
-def get_HLS_data(tile:str, bandnum:int, start_date:str, end_date:str):
+def get_HLS_data(tile:str, bandnum:int, start_date:str, end_date:str, access_type="external"):
+    print("Searching HLS STAC Geoparquet archive for HLS data...")
     # from rustac import DuckdbClient
     client = DuckdbClient(use_hive_partitioning=True)
     # configure duckdb to find S3 credentials
@@ -412,12 +387,18 @@ def get_HLS_data(tile:str, bandnum:int, start_date:str, end_date:str):
         );
         """
     )
-    response = client.search(
-        href="s3://maap-ops-workspace/shared/henrydevseed/hls-stac-geoparquet-v1/year=*/month=*/*.parquet",
-        datetime=f"{start_date}T00:00:00Z/{end_date}T23:59:59Z",
-        bbox=find_tile_bounds(tile),
-    )
-    results = GetBandLists_HLS_STAC(response, tile, bandnum)
+    results = []
+    for collection in HLS_COLLECTIONS:
+        response = client.search(
+            href=HLS_STAC_GEOPARQUET_HREF.format(collection=collection),
+            datetime=f"{start_date}T00:00:00Z/{end_date}T23:59:59Z",
+            bbox=find_tile_bounds(tile),
+            )
+        results.extend(
+            GetBandLists_HLS_STAC(response, tile, bandnum)
+            )
+    if access_type=="direct":
+        results = [r.replace(URL_PREFIX, "s3://") for r in results]
     return results
 
 
@@ -445,10 +426,11 @@ def GetBandLists_HLS_STAC(response, tile:str, bandnum:int):
 def filter_url(url: str, tile: str, band: str):
     if (os.path.basename(url).split('.')[2][1:]==tile) & (url.endswith(f"{band}.tif")):
         return True
-    return False    
+    return False   
 
 
 def get_tile_urls(tile:str, bandnum:int, start_date:str, end_date:str, access_type="external"):
+    print("Searching EarthAccess for HLS data...")
     url_list = []
     try:
         results = earthaccess.search_data(short_name=f"HLSL30",
@@ -456,7 +438,8 @@ def get_tile_urls(tile:str, bandnum:int, start_date:str, end_date:str, access_ty
                                         temporal = (start_date, end_date), #"2022-07-17","2022-07-31"
                                         bounding_box = find_tile_bounds(tile), #bounding_box = (-51.96423,68.10554,-48.71969,70.70529)
                                         )
-    except:
+    except Exception as e:
+        print(f"An error occurred searching HLSL30: {e}")
         results = []
     if len(results) > 0:
         bands = dict({2:'B02', 3:'B03', 4:'B04', 5:'B05', 6:'B06', 7:'B07',8:'Fmask'})
@@ -470,7 +453,8 @@ def get_tile_urls(tile:str, bandnum:int, start_date:str, end_date:str, access_ty
                                         temporal = (start_date, end_date), #"2022-07-17","2022-07-31"
                                         bounding_box = find_tile_bounds(tile), #bounding_box = (-51.96423,68.10554,-48.71969,70.70529)
                                         )
-    except:
+    except Exception as e:
+        print(f"An error occurred searching HLSS30: {e}")
         results = []
     if len(results) > 0:
         bands = dict({2:'B02', 3:'B03', 4:'B04', 5:'B8A', 6:'B11', 7:'B12',8:'Fmask'})
@@ -481,11 +465,11 @@ def get_tile_urls(tile:str, bandnum:int, start_date:str, end_date:str, access_ty
     return url_list
 
 
-def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, search_source="STAC"):
+def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, search_source="STAC", access_type="external"):
     if search_source.lower() == "stac":
-        url_list = get_HLS_data(tile=tile, bandnum=bandnum, start_date=start_date, end_date=end_date)
+        url_list = get_HLS_data(tile=tile, bandnum=bandnum, start_date=start_date, end_date=end_date, access_type=access_type)
     elif search_source.lower() == "earthaccess":
-        url_list = get_tile_urls(tile=tile, bandnum=bandnum, start_date=start_date, end_date=end_date, access_type="external")
+        url_list = get_tile_urls(tile=tile, bandnum=bandnum, start_date=start_date, end_date=end_date, access_type=access_type) 
     else:
         print("search_source not recognized. Must be 'STAC' or 'earthaccess'.")
         # os._exit(1)
@@ -519,7 +503,7 @@ def ndwi(green_arr, nir_arr):
     return arr
 
 
-def createVIstack(granlue_dir_df: list):
+def createVIstack(granlue_dir_df: list, access_type="direct"):
     '''Calculate VI for each source scene
     Mask out pixels above or below the red band reflectance range limit values'''
     # chunk_size = dict(band=1, x=1098, y=1098)
@@ -527,10 +511,13 @@ def createVIstack(granlue_dir_df: list):
     # for index, g_rec in tqdm(granlue_dir_df.iterrows(), total=granlue_dir_df.shape[0]):
     for idx, g_rec in granlue_dir_df.iterrows():
         try:
-            # fmask = load_band_retry(g_rec.granule_path, fill_value=QA_FILL).to_numpy().astype(np.uint8)
-            fmask = fetch_with_retry(g_rec.granule_path, fill_value=QA_FILL).to_numpy().astype(np.uint8)
-        except:
-            fmask = np.zeros((3660, 3660), dtype=np.uint8) + QA_FILL
+            # with rio.open(g_rec.granule_path) as tif:
+            #     fmask = tif.read(1, masked=False)
+            fmask = fetch_with_retry(g_rec.granule_path, fill_value=QA_FILL, access_type=access_type)
+        except Exception as e:
+            print(e)
+        if fmask is None:    
+            fmask = np.full((image_size[0], image_size[1]), fill_value=QA_FILL, dtype=np.uint8)
         fmaskarr_by = mask_hls(fmask, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask == QA_FILL)
         water_mask_by = ~fmaskarr_by & mask_hls(fmask, mask_list=['water', 'snowice'])
         if idx == 0:
@@ -548,7 +535,7 @@ def createVIstack(granlue_dir_df: list):
         else:
             print("Sat value wrong.")
         data = apply_union_of_masks(
-            [apply_fmask(read_sr_band(g_rec.granule_path.replace("Fmask", band_dict[band])), fmaskarr_by) for band in common_bands]
+            [apply_fmask(fetch_with_retry(g_rec.granule_path.replace("Fmask", band_dict[band]), fill_value=SR_FILL, access_type=access_type), fmaskarr_by) for band in common_bands]
         )
         evi_arr = evi2(data[common_bands.index("Red")], data[common_bands.index("NIR_Narrow")])
         ndwi_arr = ndwi(data[common_bands.index("Green")], data[common_bands.index("NIR_Narrow")])
@@ -567,7 +554,7 @@ def createVIstack(granlue_dir_df: list):
     water_mask = da.ma.masked_array(water_mask_rasters, mask=fmask_rasters, chunks=chunk_size, fill_value=SR_FILL)
     water_mask = water_mask.all(axis=0).compute()
     if np.any(water_mask):
-        print("Combine VI for permanent water")
+        # print("Combine VI for permanent water")
         row_indices, col_indices = np.argwhere(water_mask).T
         evi_rasters[:, row_indices, col_indices] = ndwi_rasters.compute()[:, row_indices, col_indices] # if it is permanent water, use maximum NDWI
     return evi_rasters#, ndwi_rasters
@@ -588,6 +575,37 @@ def print_array_stats(result):
         print(f"\t\t50th Percentile (Median): {da.nanpercentile(da.ma.filled(result, da.nan), 50):.2f}")
         print(f"\t\t75th Percentile: {da.nanpercentile(da.ma.filled(result, da.nan), 75):.2f}")
 
+def nanpercentile_index(arr, percentile, axis=0, no_data_value=SR_FILL):
+    """
+    Calculate the indices of a given percentile in a 3D numpy array while ignoring NaNs.
+
+    Parameters:
+    - arr (np.array): A 3D numpy array.
+    - percentile (float): The percentile to compute (0-100).
+    - axis (int): The axis along which to calculate the percentiles.
+
+    Returns:
+    - index_array: Indices of the calculated percentile values along the specified axis.
+    """
+    all_nan_mask = np.all(np.isnan(arr), axis=axis)
+    arr[0, all_nan_mask] = no_data_value # For all-NaN slices ValueError is raised.
+    # Convert to dask array with specified chunk size
+    # 
+    # dask_stack = da.from_array(arr, chunks=(arr.shape[0], 100, 100))
+    
+    # Calculate percentile along the first axis (across images)
+    # nanpercentile handles NaN values properly
+    percentile_values = da.nanquantile(arr, percentile * 1e-2, axis=axis)
+    # percentile_values = da.nanpercentile(dask_stack, percentile, axis=axis)
+    # index_array = np.abs(dask_stack - percentile_values[np.newaxis, :, :]).argmin(axis=axis)
+    index_array = da.nanargmin(np.abs(arr - percentile_values[np.newaxis, :, :]), axis=axis)
+    
+    # Compute the percentile values (needed for the next step)
+    percentile_values = percentile_values.compute()
+    index_array = index_array.compute()
+    # Handle all-NaN slices by setting index to no_data_value
+    index_array[all_nan_mask] = -1 #no_data_value #-1 # Or some other indicator if invalid .. @Qiang this results in 0 values for pixels that should be nodata in output?
+    return index_array, all_nan_mask
 
 def safe_nanarg_stat(arr, stat='max', axis=0):
     """
@@ -622,7 +640,7 @@ def safe_nanarg_stat(arr, stat='max', axis=0):
     return arr, all_nan_mask
 
 
-def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max'):
+def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max', percentile_value=None):
     """
     Compute the pixel-wise statistic from a numpy masked 3D array, accounting for NaN values and a no data value,
     and return a 2D array.
@@ -640,7 +658,7 @@ def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max
     data = da.ma.filled(masked_array, np.nan)  # Convert masked values to NaN
 
     if no_data_value is not None:
-        print("\tApply the mask for no data values...")
+        # print("\tApply the mask for no data values...")
         data = da.ma.masked_array(data, mask=(data == no_data_value), chunks=chunk_size)
         data = da.ma.filled(data, np.nan)  # Convert the new mask to NaN
         # print_array_stats(data)
@@ -651,32 +669,31 @@ def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max
     elif stat == 'max':
         #result = np.nanargmax(data, axis=0)
         result, all_nan_mask = safe_nanarg_stat(data, stat='max', axis=0)
+    elif stat == 'percentile' or 'median':
+        if stat == 'median':
+            percentile_value = 50
+        if percentile_value is None:
+            raise ValueError("For 'percentile', a percentile_value must be provided.")
+        result, all_nan_mask = nanpercentile_index(data, percentile_value, axis=0)
     else:
         raise ValueError("Invalid statistic. Choose from 'min', 'median', 'max', 'percentile'.")
 
     # Print statistical summary of the result array
-    print(f"\tStatistical summary of index array for stat={stat}")
+    # print(f"\tStatistical summary of index array for stat={stat}")
 
     return da.ma.masked_array(result, mask=all_nan_mask, fill_value=no_data_value)
-
 
 def createJulianDateHLS(file, height, width):
     j_date = file.split('/')[-1].split('.')[3][4:7]
     date_arr = np.full((height, width),j_date,dtype=np.float32)
     return date_arr
-    
-# def JulianCompositeHLS(file_list, NDVItmp, BoolMask, height, width):
-#     JulianDateImages = [createJulianDateHLS(file_list[i], height, width) for i in range(len(file_list))]
-#     JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask)
-#     return JulianComposite
 
 def JulianComposite(file_list, NDVItmp, BoolMask, height, width):
     JulianDateImages = [createJulianDateHLS(file_list[i], height, width) for i in range(len(file_list))]
-    JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask)
+    JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask, fill_value=0)
     return JulianComposite
 
-
-def CollapseBands(inArr, NDVItmp, BoolMask):
+def CollapseBands(inArr, NDVItmp, BoolMask, fill_value=SR_FILL):
     '''
     Inserts the bands as arrays (made earlier)
     Creates a single layer by using the binary mask and a sum function to collapse n-dims to 2-dims
@@ -685,10 +702,14 @@ def CollapseBands(inArr, NDVItmp, BoolMask):
     inArr[da.logical_not(NDVItmp)]=0
     compImg = da.ma.masked_array(inArr.sum(0), BoolMask, chunks=chunk_size)
     # compImg = np.round(compImg / sr_scale, 0)
-    return da.ma.filled(compImg, SR_FILL) # compImg.filled(-9999)
-    
-def CreateComposite(granlue_dir_df: list, band: str, NDVItmp: np.array, BoolMask: np.array):
+    return da.ma.filled(compImg, fill_value) # compImg.filled(-9999)
+
+def CreateComposite(granlue_dir_df: list, band: str, NDVItmp: np.array, BoolMask: np.array, access_type="direct"):
     #print("\t\tMaskedFile")
+    if band == "Fmask":
+        fill_value = QA_FILL
+    else:
+        fill_value = SR_FILL
     MaskedFile = []
     for g_rec in granlue_dir_df.itertuples():
         if g_rec.Sat in ["L10", "L30"]:
@@ -698,35 +719,65 @@ def CreateComposite(granlue_dir_df: list, band: str, NDVItmp: np.array, BoolMask
         else:
             print("Sat value wrong.")
         if band in band_dict.keys():
-            MaskedFile.append(read_sr_band(g_rec.granule_path.replace("Fmask", band_dict[band])))
+            MaskedFile.append(fetch_with_retry(g_rec.granule_path.replace("Fmask", band_dict[band]), fill_value=fill_value, access_type=access_type))
         else:
             # print("NDVItmp shape: ", NDVItmp.shape, "BoolMask shape: ", BoolMask.shape)
-            MaskedFile.append(np.ma.array(np.full((NDVItmp.shape[1], NDVItmp.shape[2]), SR_FILL), mask=True))
+            MaskedFile.append(np.ma.array(np.full((NDVItmp.shape[1], NDVItmp.shape[2]), fill_value), mask=True))
     #print("\t\tComposite")
-    Composite = CollapseBands(MaskedFile, NDVItmp, BoolMask)
+    Composite = CollapseBands(MaskedFile, NDVItmp, BoolMask, fill_value=fill_value)
     return Composite
 
-def run(tile: str, start_date: str, end_date: str, stat: str, save_dir: str, search_source="STAC"):
+
+def save_single_granule_composite(granule_path: str, save_dir: str, access_type="direct"):
+    fmask_arr = fetch_with_retry(granule_path, fill_value=QA_FILL, access_type=access_type).astype(np.uint8)
+    mask_arr = mask_hls(fmask_arr, mask_list=['cloud', 'adj_cloud', 'cloud shadow', 'aerosol_h']) | (fmask_arr == QA_FILL)
+
+    for band in common_bands:
+        arr = fetch_with_retry(granule_path.replace("Fmask", band), fill_value=SR_FILL, access_type=access_type)
+        if band != "Fmask":
+            arr[mask_arr==True] = SR_FILL
+        else:
+            arr[mask_arr==True] = QA_FILL
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        out_file = os.path.join(save_dir, f"{os.path.basename(save_dir)}.{band}.tif")
+        arr = arr.compute()
+        saveGeoTiff(out_file, arr, template_file=granule_path)
+    # DOY
+    out_file = os.path.join(save_dir, f"{os.path.basename(save_dir)}.DOY.tif")
+    doy_arr = createJulianDateHLS(granule_path, image_size[0], image_size[1])
+    doy_arr[mask_arr==True] = 0
+    saveGeoTiff(out_file, doy_arr, template_file=granule_path)
+    # Get the pixelwise count of the valid data
+    out_file = os.path.join(save_dir, f"{os.path.basename(save_dir)}.ValidCount.tif")
+    CountComp = np.full((image_size[0], image_size[1]), fill_value=1, dtype=np.uint8)
+    CountComp[mask_arr==True] = 0
+    saveGeoTiff(out_file, CountComp, template_file=granule_path)
+
+
+def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct"):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
-    granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source) # band 8 is Fmask
+    granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source, access_type="direct") # band 8 is Fmask
     print(len(granule_df_range), " granules in date range.")
     if len(granule_df_range) == 0:
         print(f"No granule found from {start_date_doy.strftime("%Y%j")} to {end_date_doy.strftime("%Y%j")}.")
         return
-
-    print(f"Creating VI array.")
-    VIstack_ma = createVIstack(granlue_dir_df=granule_df_range)
+    if len(granule_df_range) == 1:
+        out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
+        save_single_granule_composite(granule_df_range.iloc[0]["granule_path"], save_dir=save_dir, access_type=access_type)
+    # print(f"Creating VI array.")
+    VIstack_ma = createVIstack(granlue_dir_df=granule_df_range, access_type=access_type)
     # VIstack_ma = da.ma.masked_array(VIstack, chunks=chunk_size)
-    print(f"Calculating {stat} VI index.")
+    # print(f"Calculating {stat} VI index.")
     VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat)
     BoolMask = da.ma.getmaskarray(VIstat)
     # create a tmp array (binary mask) of the same input shape
     VItmp = da.ma.masked_array(da.zeros(VIstack_ma.shape, dtype=bool, chunks=chunk_size))
 
-    tmp_g_path = granule_df_range.iloc[1]["granule_path"]
+    tmp_g_path = granule_df_range.iloc[0]["granule_path"]
     # for each dimension assign the index position (flattens the array to a LUT)
-    print(f"Create LUT of VI positions using stat={stat}")
+    # print(f"Create LUT of VI positions using stat={stat}")
     for i in range(np.shape(VIstack_ma)[0]):
         VItmp[i,:,:]=VIstat==i
     for band in common_bands: #common_bands
@@ -736,30 +787,35 @@ def run(tile: str, start_date: str, end_date: str, stat: str, save_dir: str, sea
             arr = arr.astype(np.uint8)
         else:
             arr = arr.astype(np.int16)
-        out_dir = os.path.join(save_dir, tile, f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
+        out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-        out_file = os.path.join(out_dir, f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0.{band}.tif")
-        print(f"Saving {band} band.")
-        arr = arr.compute()# / sr_scale
-        saveGeoTiff(out_file, arr, template_file=tmp_g_path)
+        out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
 
-    JULIANcomp = JulianComposite(granule_df_range, VItmp, BoolMask, 3660, 3660)
-    JULIANcomp = JULIANcomp.astype(np.int16)
-    out_file = os.path.join(out_dir, f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0.DOY.tif")
-    print(f"Saving DOY.")
+        arr = arr.compute()
+        saveGeoTiff(out_file, arr, template_file=tmp_g_path, access_type=access_type)
+
+    JULIANcomp = JulianComposite(granule_df_range.granule_path.to_list(), VItmp, BoolMask, image_size[0], image_size[1])
+    # JULIANcomp = JULIANcomp.astype(np.uint16)
+    # JULIANcomp[JULIANcomp > 0] = JULIANcomp[JULIANcomp > 0] - int(start_date_doy.strftime("%j")) + 1
+    JULIANcomp = da.where(BoolMask==False, JULIANcomp - int(start_date_doy.strftime("%j")) + 1, 0)
+    JULIANcomp = JULIANcomp.astype(np.uint8)
+    out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif")
     JULIANcomp = JULIANcomp.compute()# / sr_scale
-    saveGeoTiff(out_file, JULIANcomp, template_file=tmp_g_path)
+    saveGeoTiff(out_file, JULIANcomp, template_file=tmp_g_path, access_type=access_type)
 
     # Get the pixelwise count of the valid data
     CountComp = da.sum((VIstack_ma != SR_FILL), axis=0) # -9999
-    out_file = os.path.join(out_dir, f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0.ValidCount.tif")
-    print(f"Saving count of the valid data.")
+    CountComp[BoolMask==True] = 0
+    CountComp = CountComp.astype(np.uint8)
+    out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif")
+    # print(f"Saving count of the valid data.")
+    # with ProgressBar():
+    #     CountComp = CountComp.compute()
     CountComp = CountComp.compute()
     # print(f"Count array min ({CountComp.min()}), max ({CountComp.max()}), and shape ({CountComp.shape})")
     saveGeoTiff(out_file, CountComp, template_file=tmp_g_path)
-
-
+    
 
 if __name__ == "__main__":
     parse = argparse.ArgumentParser(
@@ -784,13 +840,21 @@ if __name__ == "__main__":
         type=str,
     )
     parse.add_argument(
-        "--output_dir", help="Directory in which to save output", required=True
+        "--output_dir", 
+        help="Directory in which to save output", 
+        required=True
     )
     parse.add_argument(
         "--search_source",
         help="Either STAC or earthaccess to search for HLS granules",
-        action="store_true",
-        default="STAC",
+        type=str,
+        default="earthaccess",
+    )
+    parse.add_argument(
+        "--access_type",
+        help="Either external (from http) or direct (from S3) to search for HLS granules",
+        type=str,
+        default="direct",
     )
     args = parse.parse_args()
 
@@ -809,7 +873,7 @@ if __name__ == "__main__":
         tile=args.tile,
         start_date=args.start_date,
         end_date=args.end_date,
-        stat="max",
         save_dir=output_dir,
         search_source=args.search_source,
+        access_type=args.access_type,
     )
