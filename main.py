@@ -755,7 +755,7 @@ def save_single_granule_composite(granule_path: str, save_dir: str, access_type=
     saveGeoTiff(out_file, CountComp, template_file=granule_path)
 
 
-def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct"):
+def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=None):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
     granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source, access_type="direct") # band 8 is Fmask
@@ -770,7 +770,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
     VIstack_ma = createVIstack(granlue_dir_df=granule_df_range, access_type=access_type)
     # VIstack_ma = da.ma.masked_array(VIstack, chunks=chunk_size)
     # print(f"Calculating {stat} VI index.")
-    VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat)
+    VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat, percentile_value=percentile_value)
     BoolMask = da.ma.getmaskarray(VIstat)
     # create a tmp array (binary mask) of the same input shape
     VItmp = da.ma.masked_array(da.zeros(VIstack_ma.shape, dtype=bool, chunks=chunk_size))
@@ -840,6 +840,18 @@ if __name__ == "__main__":
         type=str,
     )
     parse.add_argument(
+        "--stat",
+        help="min, max, or percentile",
+        type=str,
+        default="max",
+    )
+    parse.add_argument(
+        "--percentile_value",
+        help="percentile value (0-100) if stat is percentile",
+        type=int,
+        default=50,
+    )
+    parse.add_argument(
         "--output_dir", 
         help="Directory in which to save output", 
         required=True
@@ -873,6 +885,8 @@ if __name__ == "__main__":
         tile=args.tile,
         start_date=args.start_date,
         end_date=args.end_date,
+        stat=args.stat,
+        percentile_value=int(args.percentile_value),
         save_dir=output_dir,
         search_source=args.search_source,
         access_type=args.access_type,
