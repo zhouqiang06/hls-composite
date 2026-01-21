@@ -325,7 +325,7 @@ def fetch_single_asset(
         return None # np.full((image_size[0], image_size[1]), fill_value)
 
 
-def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 1, fill_value=SR_FILL, access_type="external"):
+def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 5, fill_value=SR_FILL, access_type="external"):
     for attempt in range(max_retries):
         try:
             return fetch_single_asset(
