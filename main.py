@@ -335,7 +335,7 @@ def fetch_with_retry(asset_href: Path, max_retries: int = 3, delay: int = 5, fil
             )
         except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = delay * (2**attempt)
+                wait_time = delay #* (2**attempt)
                 logger.warning(
                     f"Link {asset_href} attempt {attempt + 1}/{max_retries} failed: {e}. "
                     f"Retrying in {wait_time} seconds..."
