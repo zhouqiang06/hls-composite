@@ -743,75 +743,177 @@ def save_single_granule_composite(granule_path: str, save_dir: str, access_type=
     CountComp[mask_arr==True] = 0
     saveGeoTiff(out_file, CountComp, template_file=granule_path)
 
+# def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
+#     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
+#     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
+#     granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source, access_type="direct") # band 8 is Fmask
+#     print(len(granule_df_range), " granules in date range.")
+#     if len(granule_df_range) == 0:
+#         print(f"No granule found from {start_date_doy.strftime("%Y%j")} to {end_date_doy.strftime("%Y%j")}.")
+#         return
+#     if len(granule_df_range) == 1:
+#         out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
+#         save_single_granule_composite(granule_df_range.iloc[0]["granule_path"], save_dir=save_dir, access_type=access_type)
+#     print(f"Creating VI array.")
+#     VIstack_ma = createVIstack(granlue_dir_df=granule_df_range, access_type=access_type)
+#     # VIstack_ma = da.ma.masked_array(VIstack, chunks=chunk_size)
+#     print(f"Calculating {stat} VI index.")
+#     VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat, percentile_value=percentile_value)
+#     BoolMask = da.ma.getmaskarray(VIstat)
+#     # create a tmp array (binary mask) of the same input shape
+#     VItmp = da.ma.masked_array(da.zeros(VIstack_ma.shape, dtype=bool, chunks=chunk_size))
+
+#     tmp_g_path = granule_df_range.iloc[0]["granule_path"]
+#     # for each dimension assign the index position (flattens the array to a LUT)
+#     print(f"Create LUT of VI positions using stat={stat}")
+#     for i in range(np.shape(VIstack_ma)[0]):
+#         VItmp[i,:,:]=VIstat==i
+#     for band in common_bands: #common_bands
+#         arr, arr_std = CreateComposite(granlue_dir_df=granule_df_range, 
+#                                        band=band, 
+#                                        VItmp=VItmp, 
+#                                        BoolMask=BoolMask, 
+#                                        Mask_3d=da.ma.getmaskarray(VIstack_ma), 
+#                                        access_type=access_type)
+#         if band == "Fmask":
+#             arr[arr == -9999] = 255
+#             arr = arr.astype(np.uint8)
+#         else:
+#             arr = arr.astype(np.int16)
+#         out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
+#         if not os.path.exists(out_dir):
+#             os.makedirs(out_dir)
+#         out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
+#         out_std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
+
+#         arr = arr.compute()
+#         saveGeoTiff(out_file, arr, template_file=tmp_g_path, access_type=access_type)
+#         if arr_std is not None:
+#             saveGeoTiff(out_std_file, arr_std.compute().round(decimals=0).astype(np.uint16), template_file=tmp_g_path, access_type=access_type)
+
+#     JULIANcomp = JulianComposite(granule_df_range.granule_path.to_list(), VItmp, BoolMask, image_size[0], image_size[1])
+#     # JULIANcomp = JULIANcomp.astype(np.uint16)
+#     # JULIANcomp[JULIANcomp > 0] = JULIANcomp[JULIANcomp > 0] - int(start_date_doy.strftime("%j")) + 1
+#     JULIANcomp = da.where(BoolMask==False, JULIANcomp - int(start_date_doy.strftime("%j")) + 1, 0)
+#     JULIANcomp = JULIANcomp.astype(np.uint8)
+#     out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif")
+#     JULIANcomp = JULIANcomp.compute()# / sr_scale
+#     saveGeoTiff(out_file, JULIANcomp, template_file=tmp_g_path, access_type=access_type)
+
+#     # Get the pixelwise count of the valid data
+#     CountComp = da.sum((VIstack_ma != SR_FILL), axis=0) # -9999
+#     CountComp[BoolMask==True] = 0
+#     CountComp = CountComp.astype(np.uint8)
+#     out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif")
+#     # print(f"Saving count of the valid data.")
+#     # with ProgressBar():
+#     #     CountComp = CountComp.compute()
+#     CountComp = CountComp.compute()
+#     # print(f"Count array min ({CountComp.min()}), max ({CountComp.max()}), and shape ({CountComp.shape})")
+#     saveGeoTiff(out_file, CountComp, template_file=tmp_g_path)
+
 def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
-    granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source, access_type="direct") # band 8 is Fmask
-    print(len(granule_df_range), " granules in date range.")
-    if len(granule_df_range) == 0:
-        print(f"No granule found from {start_date_doy.strftime("%Y%j")} to {end_date_doy.strftime("%Y%j")}.")
-        return
-    if len(granule_df_range) == 1:
-        out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
-        save_single_granule_composite(granule_df_range.iloc[0]["granule_path"], save_dir=save_dir, access_type=access_type)
-    print(f"Creating VI array.")
-    VIstack_ma = createVIstack(granlue_dir_df=granule_df_range, access_type=access_type)
-    # VIstack_ma = da.ma.masked_array(VIstack, chunks=chunk_size)
-    print(f"Calculating {stat} VI index.")
-    VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat, percentile_value=percentile_value)
-    BoolMask = da.ma.getmaskarray(VIstat)
-    # create a tmp array (binary mask) of the same input shape
-    VItmp = da.ma.masked_array(da.zeros(VIstack_ma.shape, dtype=bool, chunks=chunk_size))
-
-    tmp_g_path = granule_df_range.iloc[0]["granule_path"]
-    # for each dimension assign the index position (flattens the array to a LUT)
-    print(f"Create LUT of VI positions using stat={stat}")
-    for i in range(np.shape(VIstack_ma)[0]):
-        VItmp[i,:,:]=VIstat==i
-    for band in common_bands: #common_bands
-        arr, arr_std = CreateComposite(granlue_dir_df=granule_df_range, 
-                                       band=band, 
-                                       VItmp=VItmp, 
-                                       BoolMask=BoolMask, 
-                                       Mask_3d=da.ma.getmaskarray(VIstack_ma), 
-                                       access_type=access_type)
-        if band == "Fmask":
-            arr[arr == -9999] = 255
-            arr = arr.astype(np.uint8)
-        else:
-            arr = arr.astype(np.int16)
-        out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
-        out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
-        out_std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
-
-        arr = arr.compute()
-        saveGeoTiff(out_file, arr, template_file=tmp_g_path, access_type=access_type)
-        if arr_std is not None:
-            saveGeoTiff(out_std_file, arr_std.compute().round(decimals=0).astype(np.uint16), template_file=tmp_g_path, access_type=access_type)
-
-    JULIANcomp = JulianComposite(granule_df_range.granule_path.to_list(), VItmp, BoolMask, image_size[0], image_size[1])
-    # JULIANcomp = JULIANcomp.astype(np.uint16)
-    # JULIANcomp[JULIANcomp > 0] = JULIANcomp[JULIANcomp > 0] - int(start_date_doy.strftime("%j")) + 1
-    JULIANcomp = da.where(BoolMask==False, JULIANcomp - int(start_date_doy.strftime("%j")) + 1, 0)
-    JULIANcomp = JULIANcomp.astype(np.uint8)
-    out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif")
-    JULIANcomp = JULIANcomp.compute()# / sr_scale
-    saveGeoTiff(out_file, JULIANcomp, template_file=tmp_g_path, access_type=access_type)
-
-    # Get the pixelwise count of the valid data
-    CountComp = da.sum((VIstack_ma != SR_FILL), axis=0) # -9999
-    CountComp[BoolMask==True] = 0
-    CountComp = CountComp.astype(np.uint8)
-    out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif")
-    # print(f"Saving count of the valid data.")
-    # with ProgressBar():
-    #     CountComp = CountComp.compute()
-    CountComp = CountComp.compute()
-    # print(f"Count array min ({CountComp.min()}), max ({CountComp.max()}), and shape ({CountComp.shape})")
-    saveGeoTiff(out_file, CountComp, template_file=tmp_g_path)
     
+    # 1. Search for granules
+    granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, 
+                                   search_source=search_source, access_type=access_type)
+    
+    if len(granule_df) == 0:
+        logger.warning(f"No granules found for {tile}")
+        return
+
+    out_dir = os.path.join(save_dir, tile, start_date[:4], 
+                           f"HLS.M30.T{tile}.{start_date_doy.strftime('%Y%j')}.{end_date_doy.strftime('%Y%j')}.2.0")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # 2. Build Lazy 3D Stacks for all bands
+    band_stack_dict = {}
+    for band in common_bands:
+        urls = []
+        for row in granule_df.itertuples():
+            mapping = L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index
+            urls.append(row.granule_path.replace("Fmask", mapping[band]))
+        
+        band_stack_dict[band] = da.stack([
+            fetch_with_retry(u, fill_value=(QA_FILL if band == "Fmask" else SR_FILL), access_type=access_type)
+            for u in urls
+        ], axis=0)
+
+    # 3. Process Masks and EVI2
+    fmask_stack = band_stack_dict["Fmask"]
+    bad_pixel_mask = (
+        ((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
+        ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
+        ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
+        ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) |
+        (fmask_stack == QA_FILL)
+    )
+
+    red = band_stack_dict["Red"].astype(np.float32) * sr_scale
+    nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
+    evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
+    evi2_masked = da.where(bad_pixel_mask, np.nan, evi2_stack)
+
+    # 4. Compute Best Index
+    if stat == 'max':
+        best_idx = da.nanargmax(evi2_masked, axis=0)
+    elif stat == 'min':
+        best_idx = da.nanargmin(evi2_masked, axis=0)
+    else:
+        target_val = da.nanquantile(evi2_masked, percentile_value / 100.0, axis=0)
+        best_idx = da.nanargmin(da.abs(evi2_masked - target_val), axis=0)
+    
+    all_nan_mask = da.all(bad_pixel_mask, axis=0)
+    template_path = granule_df.iloc[0]["granule_path"]
+
+    # 5. Materialize Composites and Standard Deviations
+    for band in common_bands:
+        logger.info(f"Processing band: {band}")
+        
+        # Calculate Standard Deviation across time (ignoring bad pixels)
+        # We mask the stack with NaN so nanstd ignores them
+        current_stack = band_stack_dict[band].astype(np.float32)
+        masked_stack = da.where(bad_pixel_mask, np.nan, current_stack)
+        
+        # Trigger computation for both composite and std
+        # Using dask.compute on both ensures we don't read the S3 data twice
+        comp_band_lazy = da.choose(best_idx, band_stack_dict[band])
+        std_band_lazy = da.nanstd(masked_stack, axis=0)
+
+        # Apply final masks
+        fill = QA_FILL if band == "Fmask" else SR_FILL
+        comp_result = da.where(all_nan_mask, fill, comp_band_lazy)
+        std_result = da.where(all_nan_mask, 0, std_band_lazy)
+
+        # Compute and Save
+        comp_out, std_out = da.compute(comp_result, std_result)
+        
+        # Save Composite
+        out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
+        saveGeoTiff(out_file, comp_out.astype(np.int16 if band != "Fmask" else np.uint8), 
+                    template_file=template_path, access_type=access_type)
+        
+        # Save Standard Deviation (except for Fmask)
+        if band != "Fmask":
+            std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
+            saveGeoTiff(std_file, std_out.round().astype(np.uint16), 
+                        template_file=template_path, access_type=access_type)
+
+    # 6. Julian Day and Valid Count (Same as previous version)
+    valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8)
+    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), 
+                valid_count.compute(), template_file=template_path)
+
+    doy_values = np.array([int(datetime.strptime(os.path.basename(p).split('.')[3][:7], "%Y%j").strftime("%j")) 
+                           for p in granule_df.granule_path])
+    start_doy = int(start_date_doy.strftime("%j"))
+    best_doy = da.choose(best_idx, da.from_array(doy_values[:, None, None], chunks=(1, 512, 512)))
+    relative_doy = da.where(all_nan_mask, 0, (best_doy - start_doy + 1)).astype(np.uint8)
+    
+    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), 
+                relative_doy.compute(), template_file=template_path)
 
 if __name__ == "__main__":
     parse = argparse.ArgumentParser(
