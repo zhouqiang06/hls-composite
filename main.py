@@ -552,11 +552,13 @@ def createVIstack(granlue_dir_df: list, access_type="direct"):
         # vi_rasters.append(vi_arr)
     evi_rasters = da.ma.masked_array(evi_rasters, mask=fmask_rasters, chunks=chunk_size, fill_value=SR_FILL).compute()
     water_mask = da.ma.masked_array(water_mask_rasters, mask=fmask_rasters, chunks=chunk_size, fill_value=SR_FILL)
-    water_mask = water_mask.all(axis=0).compute()
-    if np.any(water_mask):
+    water_mask = water_mask.all(axis=0)#.compute()
+    if da.any(water_mask):
         # print("Combine VI for permanent water")
-        row_indices, col_indices = np.argwhere(water_mask).T
-        evi_rasters[:, row_indices, col_indices] = ndwi_rasters.compute()[:, row_indices, col_indices] # if it is permanent water, use maximum NDWI
+        # row_indices, col_indices = np.argwhere(water_mask).T
+        # evi_rasters[:, row_indices, col_indices] = ndwi_rasters.compute()[:, row_indices, col_indices] # if it is permanent water, use maximum NDWI
+        all_water_mask_3d = da.stack([water_mask] * evi_rasters.shape[0], axis=0)
+        evi_rasters[all_water_mask_3d] = ndwi_rasters[all_water_mask_3d]
     return evi_rasters#, ndwi_rasters
 
 
@@ -588,23 +590,12 @@ def nanpercentile_index(arr, percentile, axis=0, no_data_value=SR_FILL):
     - index_array: Indices of the calculated percentile values along the specified axis.
     """
     all_nan_mask = np.all(np.isnan(arr), axis=axis)
-    arr[0, all_nan_mask] = no_data_value # For all-NaN slices ValueError is raised.
-    # Convert to dask array with specified chunk size
-    # 
-    # dask_stack = da.from_array(arr, chunks=(arr.shape[0], 100, 100))
-    
-    # Calculate percentile along the first axis (across images)
-    # nanpercentile handles NaN values properly
+    all_nan_mask_3d = da.stack([all_nan_mask] * arr.shape[axis], axis=axis)
+    arr[all_nan_mask_3d] = no_data_value # For all-NaN slices ValueError is raised.
     percentile_values = da.nanquantile(arr, percentile * 1e-2, axis=axis)
-    # percentile_values = da.nanpercentile(dask_stack, percentile, axis=axis)
-    # index_array = np.abs(dask_stack - percentile_values[np.newaxis, :, :]).argmin(axis=axis)
     index_array = da.nanargmin(np.abs(arr - percentile_values[np.newaxis, :, :]), axis=axis)
     
-    # Compute the percentile values (needed for the next step)
-    percentile_values = percentile_values.compute()
-    index_array = index_array.compute()
-    # Handle all-NaN slices by setting index to no_data_value
-    index_array[all_nan_mask] = -1 #no_data_value #-1 # Or some other indicator if invalid .. @Qiang this results in 0 values for pixels that should be nodata in output?
+    index_array[all_nan_mask] = no_data_value #no_data_value #-1 # Or some other indicator if invalid .. @Qiang this results in 0 values for pixels that should be nodata in output?
     return index_array, all_nan_mask
 
 def safe_nanarg_stat(arr, stat='max', axis=0):
@@ -618,16 +609,10 @@ def safe_nanarg_stat(arr, stat='max', axis=0):
     Returns:
     - np.array: Indices of the maximum values along the given axis, avoiding all-NaN slices.
     """
-    # arr_dask = da.from_array(arr, chunks=chunk_size)
-    # Check where rows/columns are all NaNs along a specified axis
     all_nan_mask = da.all(da.isnan(arr), axis=axis)
-    # arr[0,:,:][all_nan_mask] = SR_FILL # For all-NaN slices ValueError is raised.
-    # Replace all-NaN slices with a fill value (e.g., a large negative number)
-    # fill_value = da.min(arr) if da.min(arr) < 0 else -da.inf
     fill_value = SR_FILL
     # Choose an appropriate fill value based on your data context
     arr = da.where(all_nan_mask[np.newaxis, ...], fill_value, arr)
-    # arr_dask = da.from_array(arr_filled, chunks=(arr.shape[0], 100, 100))
     if stat == 'max':
         # Return indices, using nanargmax safely
         arr = da.nanargmax(arr, axis=axis) # index_arr
@@ -635,8 +620,6 @@ def safe_nanarg_stat(arr, stat='max', axis=0):
         arr = da.nanargmin(arr, axis=axis)
     else:
         raise ValueError("Invalid statistic. Choose from 'min', 'max'.")
-    # with ProgressBar():
-    #     arr = arr.compute()
     return arr, all_nan_mask
 
 
@@ -678,9 +661,6 @@ def compute_stat_from_masked_array(masked_array, no_data_value = None, stat='max
     else:
         raise ValueError("Invalid statistic. Choose from 'min', 'median', 'max', 'percentile'.")
 
-    # Print statistical summary of the result array
-    # print(f"\tStatistical summary of index array for stat={stat}")
-
     return da.ma.masked_array(result, mask=all_nan_mask, fill_value=no_data_value)
 
 def createJulianDateHLS(file, height, width):
@@ -688,23 +668,24 @@ def createJulianDateHLS(file, height, width):
     date_arr = np.full((height, width),j_date,dtype=np.float32)
     return date_arr
 
-def JulianComposite(file_list, NDVItmp, BoolMask, height, width):
+def JulianComposite(file_list, VItmp, BoolMask, height, width):
     JulianDateImages = [createJulianDateHLS(file_list[i], height, width) for i in range(len(file_list))]
-    JulianComposite = CollapseBands(JulianDateImages, NDVItmp, BoolMask, fill_value=0)
+    JulianComposite = CollapseBands(JulianDateImages, VItmp, BoolMask, fill_value=0)
     return JulianComposite
 
-def CollapseBands(inArr, NDVItmp, BoolMask, fill_value=SR_FILL):
+def CollapseBands(inArr, VItmp, BoolMask, fill_value=SR_FILL):
     '''
     Inserts the bands as arrays (made earlier)
     Creates a single layer by using the binary mask and a sum function to collapse n-dims to 2-dims
     '''
     inArr = da.ma.masked_equal(inArr, 0)
-    inArr[da.logical_not(NDVItmp)]=0
+    inArr[da.logical_not(VItmp)]=0
     compImg = da.ma.masked_array(inArr.sum(0), BoolMask, chunks=chunk_size)
     # compImg = np.round(compImg / sr_scale, 0)
     return da.ma.filled(compImg, fill_value) # compImg.filled(-9999)
 
-def CreateComposite(granlue_dir_df: list, band: str, NDVItmp: np.array, BoolMask: np.array, access_type="direct"):
+
+def CreateComposite(granlue_dir_df: list, band: str, VItmp: np.array, BoolMask: np.array, Mask_3d: np.array, access_type="direct"):
     #print("\t\tMaskedFile")
     if band == "Fmask":
         fill_value = QA_FILL
@@ -721,11 +702,19 @@ def CreateComposite(granlue_dir_df: list, band: str, NDVItmp: np.array, BoolMask
         if band in band_dict.keys():
             MaskedFile.append(fetch_with_retry(g_rec.granule_path.replace("Fmask", band_dict[band]), fill_value=fill_value, access_type=access_type))
         else:
-            # print("NDVItmp shape: ", NDVItmp.shape, "BoolMask shape: ", BoolMask.shape)
-            MaskedFile.append(np.ma.array(np.full((NDVItmp.shape[1], NDVItmp.shape[2]), fill_value), mask=True))
+            # print("VItmp shape: ", VItmp.shape, "BoolMask shape: ", BoolMask.shape)
+            MaskedFile.append(np.ma.array(np.full((VItmp.shape[1], VItmp.shape[2]), fill_value), mask=True))
+    # save_dir = r"/projects/code/hls/Composite/hls-composite/test-median"
+    # out_file = os.path.join(save_dir, f"{band}.tif")
+    # saveGeoTiff(out_file, da.stack(MaskedFile, axis=0), template_file=granlue_dir_df.iloc[0]["granule_path"], access_type=access_type)
     #print("\t\tComposite")
-    Composite = CollapseBands(MaskedFile, NDVItmp, BoolMask, fill_value=fill_value)
-    return Composite
+    Composite = CollapseBands(MaskedFile, VItmp, BoolMask, fill_value=fill_value)
+    if band != "Fmask":
+        arr_std = da.nanstd(da.ma.masked_array(da.stack(MaskedFile, axis=0), Mask_3d, chunks=chunk_size), axis=0)
+        arr_std[BoolMask==True] = 0
+    else: 
+        arr_std = None
+    return Composite, arr_std
 
 
 def save_single_granule_composite(granule_path: str, save_dir: str, access_type="direct"):
@@ -741,7 +730,7 @@ def save_single_granule_composite(granule_path: str, save_dir: str, access_type=
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         out_file = os.path.join(save_dir, f"{os.path.basename(save_dir)}.{band}.tif")
-        arr = arr.compute()
+        # arr = arr.compute()
         saveGeoTiff(out_file, arr, template_file=granule_path)
     # DOY
     out_file = os.path.join(save_dir, f"{os.path.basename(save_dir)}.DOY.tif")
@@ -754,8 +743,7 @@ def save_single_granule_composite(granule_path: str, save_dir: str, access_type=
     CountComp[mask_arr==True] = 0
     saveGeoTiff(out_file, CountComp, template_file=granule_path)
 
-
-def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=None):
+def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
     granule_df_range = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source=search_source, access_type="direct") # band 8 is Fmask
@@ -766,10 +754,10 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
     if len(granule_df_range) == 1:
         out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_date_doy.strftime("%Y%j")}.{end_date_doy.strftime("%Y%j")}.2.0")
         save_single_granule_composite(granule_df_range.iloc[0]["granule_path"], save_dir=save_dir, access_type=access_type)
-    # print(f"Creating VI array.")
+    print(f"Creating VI array.")
     VIstack_ma = createVIstack(granlue_dir_df=granule_df_range, access_type=access_type)
     # VIstack_ma = da.ma.masked_array(VIstack, chunks=chunk_size)
-    # print(f"Calculating {stat} VI index.")
+    print(f"Calculating {stat} VI index.")
     VIstat = compute_stat_from_masked_array(VIstack_ma, no_data_value=SR_FILL, stat=stat, percentile_value=percentile_value)
     BoolMask = da.ma.getmaskarray(VIstat)
     # create a tmp array (binary mask) of the same input shape
@@ -777,11 +765,16 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
 
     tmp_g_path = granule_df_range.iloc[0]["granule_path"]
     # for each dimension assign the index position (flattens the array to a LUT)
-    # print(f"Create LUT of VI positions using stat={stat}")
+    print(f"Create LUT of VI positions using stat={stat}")
     for i in range(np.shape(VIstack_ma)[0]):
         VItmp[i,:,:]=VIstat==i
     for band in common_bands: #common_bands
-        arr = CreateComposite(granule_df_range, band, VItmp, BoolMask)
+        arr, arr_std = CreateComposite(granlue_dir_df=granule_df_range, 
+                                       band=band, 
+                                       VItmp=VItmp, 
+                                       BoolMask=BoolMask, 
+                                       Mask_3d=da.ma.getmaskarray(VIstack_ma), 
+                                       access_type=access_type)
         if band == "Fmask":
             arr[arr == -9999] = 255
             arr = arr.astype(np.uint8)
@@ -791,9 +784,12 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
         out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
+        out_std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
 
         arr = arr.compute()
         saveGeoTiff(out_file, arr, template_file=tmp_g_path, access_type=access_type)
+        if arr_std is not None:
+            saveGeoTiff(out_std_file, arr_std.compute().round(decimals=0).astype(np.uint16), template_file=tmp_g_path, access_type=access_type)
 
     JULIANcomp = JulianComposite(granule_df_range.granule_path.to_list(), VItmp, BoolMask, image_size[0], image_size[1])
     # JULIANcomp = JULIANcomp.astype(np.uint16)
