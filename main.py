@@ -188,7 +188,7 @@ QA_BIT = {'cirrus': 0,
 'aerosol_h': 7
 }
 
-chunk_size = dict(band=1, x=512, y=512)
+chunk_size = dict(band=1, x=1830, y=1830)
 image_size = (3660, 3660)
 
 def mask_hls(qa_arr, mask_list=['cloud', 'adj_cloud', 'cloud shadow']):
