@@ -481,6 +481,7 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
     return pd.DataFrame({"Date": date_list, "Sat": sat_list, "granule_path": url_list})
 
 
+
 def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
@@ -510,7 +511,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
             for u in urls
         ], axis=0)
 
-    # 3. Process Masks
+    # 3. Comprehensive Masking
     fmask_stack = band_stack_dict["Fmask"]
     bad_pixel_mask = (
         ((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
@@ -520,71 +521,69 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         (fmask_stack == QA_FILL)
     )
     
-    # Identify pixels that have NO valid data at all across the time series
+    # Critical: Determine where no valid data exists at all
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
-    # Identify pixels that have AT LEAST one valid observation
-    has_valid_mask = ~all_nan_mask
 
-    # 4. Compute Best Index Safely
+    # 4. Safe Index Calculation
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
     evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
     
-    # Fill bad pixels with SR_FILL (or any value) so argmin/max doesn't see NaNs
-    # but we will only trust the result where has_valid_mask is True
-    evi2_safe = da.where(bad_pixel_mask, SR_FILL, evi2_stack)
+    # Replace NaNs with a dummy value to keep Dask happy during calculation
+    # We use da.where to create a version of the stack that has NO all-nan slices
+    safe_evi2 = da.where(bad_pixel_mask, np.nan, evi2_stack)
+    # Fill all-nan slices with 0 so argmin/argmax/quantile don't crash
+    calc_stack = da.where(all_nan_mask[None, :, :], 0, safe_evi2)
 
     if stat == 'max':
-        # We use the 'safe' stack for the calc, but then force the index to 0 
-        # where no valid data exists to prevent the ValueError
-        best_idx = da.where(has_valid_mask, da.nanargmax(da.where(bad_pixel_mask, np.nan, evi2_stack), axis=0), 0)
+        best_idx = da.nanargmax(calc_stack, axis=0)
     elif stat == 'min':
-        best_idx = da.where(has_valid_mask, da.nanargmin(da.where(bad_pixel_mask, np.nan, evi2_stack), axis=0), 0)
+        best_idx = da.nanargmin(calc_stack, axis=0)
     else:
         if stat == 'median':
             percentile_value = 50
-        # For percentile, compute quantile only where valid
-        target_val = da.nanquantile(da.where(bad_pixel_mask, np.nan, evi2_stack), percentile_value / 100.0, axis=0)
-        # Find index closest to quantile
-        diff = da.abs(evi2_stack - target_val)
-        best_idx = da.where(has_valid_mask, da.nanargmin(da.where(bad_pixel_mask, np.nan, diff), axis=0), 0)
+        # Quantile is very sensitive to all-nan
+        target_val = da.nanquantile(calc_stack, percentile_value / 100.0, axis=0)
+        diff = da.abs(calc_stack - target_val)
+        best_idx = da.nanargmin(diff, axis=0)
     
+    # Ensure best_idx is 0 where everything was masked (it won't be used anyway)
+    best_idx = da.where(all_nan_mask, 0, best_idx)
     template_path = granule_df.iloc[0]["granule_path"]
 
-    # 5. Materialize Composites and Standard Deviations
+    # 5. Process and Save Bands
     for band in common_bands:
         logger.info(f"Processing band: {band}")
         
-        current_stack = band_stack_dict[band].astype(np.float32)
-        masked_stack = da.where(bad_pixel_mask, np.nan, current_stack)
+        current_stack = band_stack_dict[band]
+        # Create a version where all-nan slices are replaced with 0 for the std-dev calculation
+        # This prevents the "All NaN slice" error
+        masked_for_std = da.where(bad_pixel_mask, np.nan, current_stack.astype(np.float32))
+        safe_for_std = da.where(all_nan_mask[None, :, :], 0, masked_for_std)
         
-        # Composite: Pick the 'best' pixel, then apply the all-nan-mask fill
-        comp_band_lazy = da.choose(best_idx, band_stack_dict[band])
+        # Define computations
+        comp_band_lazy = da.choose(best_idx, current_stack)
         fill = QA_FILL if band == "Fmask" else SR_FILL
         comp_result = da.where(all_nan_mask, fill, comp_band_lazy)
 
-        # Std Dev: Only calculate where there is valid data
         if band != "Fmask":
-            # nanstd still raises warning/error on all-nan. 
-            # We use where() to provide a safe slice or just mask the result.
-            std_calc = da.nanstd(masked_stack, axis=0)
+            std_calc = da.nanstd(safe_for_std, axis=0)
             std_result = da.where(all_nan_mask, 0, std_calc)
             
+            # Compute both simultaneously
             comp_out, std_out = da.compute(comp_result, std_result)
             
-            # Save Std Dev
             std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
             saveGeoTiff(std_file, std_out.round().astype(np.uint16), 
                         template_file=template_path, access_type=access_type)
         else:
             comp_out = comp_result.compute()
 
-        # Save Composite
         out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
         saveGeoTiff(out_file, comp_out.astype(np.int16 if band != "Fmask" else np.uint8), 
                     template_file=template_path, access_type=access_type)
 
-    # 6. Julian Day and Valid Count
+    # 6. Metadata Layers (ValidCount and DOY)
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8)
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), 
                 valid_count.compute(), template_file=template_path)
@@ -593,7 +592,6 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
                            for p in granule_df.granule_path])
     start_doy = int(start_date_doy.strftime("%j"))
     
-    # Broadcase DOY values to a 3D dask array for da.choose
     doy_stack = da.from_array(doy_values[:, None, None], chunks=(1, 512, 512))
     best_doy = da.choose(best_idx, doy_stack)
     relative_doy = da.where(all_nan_mask, 0, (best_doy - start_doy + 1)).astype(np.uint8)
