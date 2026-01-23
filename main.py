@@ -847,7 +847,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         ((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
         ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
         ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
-        ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) |
+        (((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)) |
         (fmask_stack == QA_FILL)
     )
 
