@@ -546,6 +546,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         target_val = da.nanquantile(calc_stack, percentile_value / 100.0, axis=0)
         diff = da.abs(calc_stack - target_val)
         best_idx = da.nanargmin(diff, axis=0)
+        del diff, target_val, calc_stack, safe_evi2
     
     # Ensure best_idx is 0 where everything was masked (it won't be used anyway)
     best_idx = da.where(all_nan_mask, 0, best_idx)
