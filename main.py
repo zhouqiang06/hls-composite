@@ -511,7 +511,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
             for u in urls
         ], axis=0)
 
-    # 3. Comprehensive Masking
+    # 3. Masking and "Has Data" Identification
     fmask_stack = band_stack_dict["Fmask"]
     bad_pixel_mask = (
         ((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
@@ -521,57 +521,60 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         (fmask_stack == QA_FILL)
     )
     
-    # Critical: Determine where no valid data exists at all
+    # Pre-calculate where we have NO data across time
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
+    # Add a singleton dimension for broadcasting to 3D stacks
+    all_nan_mask_3d = all_nan_mask[None, :, :]
 
-    # 4. Safe Index Calculation
+    # 4. Safe Index Selection (EVI2)
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
     evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
     
-    # Replace NaNs with a dummy value to keep Dask happy during calculation
-    # We use da.where to create a version of the stack that has NO all-nan slices
-    safe_evi2 = da.where(bad_pixel_mask, np.nan, evi2_stack)
-    # Fill all-nan slices with 0 so argmin/argmax/quantile don't crash
-    calc_stack = da.where(all_nan_mask[None, :, :], 0, safe_evi2)
+    # Replace bad pixels with NaNs for stat calculation, 
+    # then fill All-NaN slices with a dummy 0 so reductions don't crash
+    calc_stack = da.where(bad_pixel_mask, np.nan, evi2_stack)
+    safe_calc_stack = da.where(all_nan_mask_3d, 0.0, calc_stack)
 
     if stat == 'max':
-        best_idx = da.nanargmax(calc_stack, axis=0)
+        best_idx = da.nanargmax(safe_calc_stack, axis=0)
     elif stat == 'min':
-        best_idx = da.nanargmin(calc_stack, axis=0)
+        best_idx = da.nanargmin(safe_calc_stack, axis=0)
     else:
-        if stat == 'median':
-            percentile_value = 50
-        # Quantile is very sensitive to all-nan
-        target_val = da.nanquantile(calc_stack, percentile_value / 100.0, axis=0)
-        diff = da.abs(calc_stack - target_val)
+        # Quantile is particularly sensitive to all-NaN blocks
+        target_val = da.nanquantile(safe_calc_stack, percentile_value / 100.0, axis=0)
+        diff = da.abs(safe_calc_stack - target_val)
         best_idx = da.nanargmin(diff, axis=0)
-        del diff, target_val, calc_stack, safe_evi2
     
-    # Ensure best_idx is 0 where everything was masked (it won't be used anyway)
+    # Force index to 0 for all-NaN areas (this pixel will be masked out anyway)
     best_idx = da.where(all_nan_mask, 0, best_idx)
     template_path = granule_df.iloc[0]["granule_path"]
 
-    # 5. Process and Save Bands
+    # 5. Materialize Bands and Handle Std Dev
     for band in common_bands:
         logger.info(f"Processing band: {band}")
         
         current_stack = band_stack_dict[band]
-        # Create a version where all-nan slices are replaced with 0 for the std-dev calculation
-        # This prevents the "All NaN slice" error
-        masked_for_std = da.where(bad_pixel_mask, np.nan, current_stack.astype(np.float32))
-        safe_for_std = da.where(all_nan_mask[None, :, :], 0, masked_for_std)
-        
-        # Define computations
-        comp_band_lazy = da.choose(best_idx, current_stack)
         fill = QA_FILL if band == "Fmask" else SR_FILL
+        
+        # Best composite value
+        comp_band_lazy = da.choose(best_idx, current_stack)
         comp_result = da.where(all_nan_mask, fill, comp_band_lazy)
 
         if band != "Fmask":
-            std_calc = da.nanstd(safe_for_std, axis=0)
+            # Safety for nanstd: replace bad with NaN, then All-NaN slices with dummy 0
+            masked_data = da.where(bad_pixel_mask, np.nan, current_stack.astype(np.float32))
+            safe_std_stack = da.where(all_nan_mask_3d, 0.0, masked_data)
+            
+            # If only one image, std is 0
+            if len(granule_df) > 1:
+                std_calc = da.nanstd(safe_std_stack, axis=0)
+            else:
+                std_calc = da.zeros_like(all_nan_mask, dtype=np.float32)
+                
             std_result = da.where(all_nan_mask, 0, std_calc)
             
-            # Compute both simultaneously
+            # Execute computation
             comp_out, std_out = da.compute(comp_result, std_result)
             
             std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
@@ -584,7 +587,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         saveGeoTiff(out_file, comp_out.astype(np.int16 if band != "Fmask" else np.uint8), 
                     template_file=template_path, access_type=access_type)
 
-    # 6. Metadata Layers (ValidCount and DOY)
+    # 6. Metadata Layers
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8)
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), 
                 valid_count.compute(), template_file=template_path)
