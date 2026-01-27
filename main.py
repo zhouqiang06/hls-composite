@@ -494,7 +494,7 @@ def composite(tile: str, start_date, end_date, stat: str, save_dir: str, search_
         logger.warning(f"No granules found for {tile}")
         return
 
-    out_dir = os.path.join(Path(save_dir).parents[6], tile, start_date[:4], 
+    out_dir = os.path.join(save_dir, tile, start_date[:4], 
                            f"HLS.M30.T{tile}.{start_date_doy.strftime('%Y%j')}.{end_date_doy.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
     
