@@ -490,14 +490,17 @@ def composite(tile: str, start_date, end_date, stat: str, save_dir: str, search_
     granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, 
                                    search_source=search_source, access_type=access_type)
     
-    if len(granule_df) == 0:
-        logger.warning(f"No granules found for {tile}")
-        return
-
     out_dir = os.path.join(save_dir, tile, start_date[:4], 
                            f"HLS.M30.T{tile}.{start_date_doy.strftime('%Y%j')}.{end_date_doy.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
     
+    if len(granule_df) == 0:
+        logger.warning(f"No granules found for {tile}")
+        file_path = os.path.join(out_dir, f"No granules found")
+        with open(file_path, 'w') as f:
+            pass
+        return
+        
     # 2. Build Lazy 3D Stacks
     band_stack_dict = {}
     for band in common_bands:
