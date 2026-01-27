@@ -482,7 +482,7 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
 
 
 
-def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
+def composite(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
     start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
     end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
     
@@ -494,7 +494,7 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
         logger.warning(f"No granules found for {tile}")
         return
 
-    out_dir = os.path.join(save_dir, tile, start_date[:4], 
+    out_dir = os.path.join(Path(save_dir).parents[6], tile, start_date[:4], 
                            f"HLS.M30.T{tile}.{start_date_doy.strftime('%Y%j')}.{end_date_doy.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
     
@@ -609,6 +609,37 @@ def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source
     
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), 
                 relative_doy.compute(), template_file=template_path)
+    return True
+
+
+def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
+    n_retries = 3
+    delay = 5  # seconds
+    for attempt in range(n_retries):
+        try:
+            return composite(
+                            tile=tile,
+                            start_date=start_date,
+                            end_date=end_date,
+                            stat=stat,
+                            percentile_value=percentile_value,
+                            save_dir=save_dir,
+                            search_source=search_source,
+                            access_type=access_type,
+                            )
+        except Exception as e:
+            if attempt < n_retries - 1:
+                wait_time = delay 
+                logger.warning(
+                    f"{tile} {start_date} {end_date} attempt {attempt + 1}/{n_retries} failed: {e}. "
+                    f"Retrying in {wait_time} seconds..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"All {n_retries} attempts failed for {tile} {start_date} {end_date}. Last error: {e}"
+                )
+                return None
     
 
 if __name__ == "__main__":
