@@ -24,14 +24,6 @@ inputs:
     description: min, max, or median
     name: stat
     required: false
-  - default: '50'
-    description: 0-100 if stat is percentile
-    name: percentile_value
-    required: false
-  - default: STAC
-    description: STAC or earthaccess
-    name: search_source
-    required: false
   - default: direct
     description: Either external (from http) or direct (from S3)
     name: access_type
