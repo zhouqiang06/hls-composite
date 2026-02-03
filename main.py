@@ -214,43 +214,35 @@ def get_geo(filepath):
         return ds.transform, ds.crs
 
 
-def saveGeoTiff(filename, data, template_file, access_type="external"):
-    if not os.path.exists(os.path.dirname(filename)):
-        os.makedirs(os.path.dirname(filename))
-    if os.path.exists(filename):
-        os.remove(filename)
-
-    if data.ndim == 2:
-        nband, height_data, width_data = 1, data.shape[0], data.shape[1]
-    else:
-        nband, height_data, width_data = data.shape[0], data.shape[1], data.shape[2]
-    try:
-        # Get session from credential manager if using direct bucket access
-        rasterio_env = {}
-        if access_type == "direct":
-            rasterio_env["session"] = _credential_manager.get_session()
-        with rio.Env(**rasterio_env):
-            with rio.open(template_file) as ds:
-                output_transform, output_crs = ds.transform, ds.crs
-                profile = {
-                            'driver': 'GTiff',
-                            'dtype': data.dtype,
-                            'count': nband,  # Number of bands
-                            'height': height_data,
-                            'width': width_data,
-                            'crs': output_crs,
-                            'transform': output_transform,
-                            'compress': 'lzw' # Optional: add compression
-                        }
-            with rio.open(filename, 'w', **profile) as dst:
-                if nband == 1:
-                    dst.write(data, 1)
-                else:
-                    for i in range(nband):
-                        dst.write(data[i], i + 1)
-            return True
-    except Exception as e:
-        print(f"An error occurred: {e}")
+def saveGeoTiff(filename, data, template_file, access_type="direct", nodata=None, scale=None):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    nband = 1 if data.ndim == 2 else data.shape[0]
+    
+    rasterio_env = {"session": _credential_manager.get_session()} if access_type == "direct" else {}
+    
+    with rio.Env(**rasterio_env):
+        with rio.open(template_file) as ds:
+            profile = ds.profile.copy()
+            profile.update({
+                'dtype': data.dtype,
+                'count': nband,
+                'height': data.shape[-2],
+                'width': data.shape[-1],
+                'compress': 'lzw',
+                'nodata': nodata
+            })
+            
+        with rio.open(filename, 'w', **profile) as dst:
+            if nband == 1:
+                dst.write(data, 1)
+            else:
+                for i in range(nband):
+                    dst.write(data[i], i + 1)
+            
+            # Set metadata tags for scale factor
+            if scale is not None:
+                dst.update_tags(1, SCALEOFFSET=0.0, SCALER=scale)
+                dst.set_band_unit(1, 'reflectance')
 
 
 def get_stac_items(
@@ -482,93 +474,57 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
 
 
 
-def composite(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
-    start_date_doy = datetime.strptime(start_date, "%Y-%m-%d")
-    end_date_doy = datetime.strptime(end_date, "%Y-%m-%d")
+def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", access_type="direct", percentile_value=50):
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    granule_df = find_all_granules(tile, start_date, end_date, search_source=search_source, access_type)
     
-    # 1. Search for granules
-    granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, 
-                                   search_source=search_source, access_type=access_type)
+    if len(granule_df) == 0: return
     
-    out_dir = os.path.join(save_dir, tile, start_date[:4], 
-                           f"HLS.M30.T{tile}.{start_date_doy.strftime('%Y%j')}.{end_date_doy.strftime('%Y%j')}.2.0")
+    out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_dt.strftime('%Y%j')}.{end_dt.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
-    
-    if len(granule_df) == 0:
-        logger.warning(f"No granules found for {tile}")
-        file_path = os.path.join(out_dir, f"No granules found")
-        with open(file_path, 'w') as f:
-            pass
-        return
-        
-    # 2. Build Lazy 3D Stacks
+
     band_stack_dict = {}
     for band in common_bands:
-        urls = []
-        for row in granule_df.itertuples():
-            mapping = L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index
-            urls.append(row.granule_path.replace("Fmask", mapping[band]))
-        
-        band_stack_dict[band] = da.stack([
-            fetch_with_retry(u, fill_value=(QA_FILL if band == "Fmask" else SR_FILL), access_type=access_type)
-            for u in urls
-        ], axis=0)
+        urls = [row.granule_path.replace("Fmask", (L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index)[band]) 
+                for row in granule_df.itertuples()]
+        band_stack_dict[band] = da.stack([fetch_with_retry(u, access_type=access_type) for u in urls], axis=0)
 
-    # 3. Masking and All-NaN Identification
     fmask_stack = band_stack_dict["Fmask"]
-    bad_pixel_mask = (
-        ((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
-        ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
-        ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
-        (((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)) |
-        (fmask_stack == QA_FILL)
-    )
+    bad_pixel_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
+                      ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
+                      ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
+                      (fmask_stack == QA_FILL))
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
-    # 4. Optimized Index Calculation (Separated Median and Percentile)
+    # Calculate EVI2 for indexing
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
     evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
 
     def _get_best_index(evi, mask, all_nan, stat_type, p_val):
-        evi_f = evi.astype(np.float32)
+        evi_f = evi.copy()
         evi_f[mask] = np.nan
-        
         with np.errstate(all='ignore'):
-            if stat_type == 'max':
-                target = np.nanmax(evi_f, axis=0)
-            elif stat_type == 'min':
-                target = np.nanmin(evi_f, axis=0)
-            elif stat_type == 'median':
-                # Optimized: np.nanmedian is faster than np.nanquantile(0.5)
-                target = np.nanmedian(evi_f, axis=0)
-            else:
-                # Standard percentile procedure
-                target = np.nanquantile(evi_f, p_val / 100.0, axis=0)
-            
-            # Find the index of the observation closest to the statistical target
+            if stat_type == 'max': target = np.nanmax(evi_f, axis=0)
+            elif stat_type == 'min': target = np.nanmin(evi_f, axis=0)
+            elif stat_type == 'median': target = np.nanmedian(evi_f, axis=0)
+            else: target = np.nanquantile(evi_f, p_val / 100.0, axis=0)
             diff = np.abs(evi_f - target)
-            diff[np.isnan(diff)] = 1e9 
+            diff[np.isnan(diff)] = 1e9
             idx = np.argmin(diff, axis=0)
-            idx[all_nan] = 0 
+            idx[all_nan] = 0
             return idx.astype(np.int16)
 
-    best_idx = da.map_blocks(
-        _get_best_index, evi2_stack, bad_pixel_mask, all_nan_mask,
-        stat_type=stat, p_val=percentile_value,
-        drop_axis=0, dtype=np.int16
-    )
+    best_idx = da.map_blocks(_get_best_index, evi2_stack, bad_pixel_mask, all_nan_mask, 
+                             stat_type=stat, p_val=percentile_value, drop_axis=0, dtype=np.int16)
 
     template_path = granule_df.iloc[0]["granule_path"]
 
-    # 5. Materialize Composites and Standard Deviations
     for band in common_bands:
-        logger.info(f"Processing band: {band}")
+        logger.info(f"Processing: {band}")
         current_stack = band_stack_dict[band]
-        
-        comp_band_lazy = da.choose(best_idx, current_stack)
-        fill = QA_FILL if band == "Fmask" else SR_FILL
-        comp_result = da.where(all_nan_mask, fill, comp_band_lazy)
+        comp_result = da.where(all_nan_mask, (QA_FILL if band=="Fmask" else SR_FILL), da.choose(best_idx, current_stack))
 
         if band != "Fmask":
             def _safe_std(data, mask, all_nan):
@@ -578,144 +534,52 @@ def composite(tile: str, start_date, end_date, stat: str, save_dir: str, search_
                     res = np.nanstd(data_f, axis=0)
                     res[all_nan] = 0
                     return res
-
-            std_result = da.map_blocks(
-                _safe_std, current_stack, bad_pixel_mask, all_nan_mask,
-                drop_axis=0, dtype=np.float32
-            )
             
-            # Use da.compute to trigger both results in one pass over the data
-            comp_out, std_out = da.compute(comp_result, std_result)
+            std_lazy = da.map_blocks(_safe_std, current_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
+            comp_out, std_out = da.compute(comp_result, std_lazy)
             
-            std_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif")
-            saveGeoTiff(std_file, std_out.round().astype(np.uint16), 
-                        template_file=template_path, access_type=access_type)
+            # Save spectral band with scale and nodata
+            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
+                        comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
+            # Save STD as int16 with scale and nodata
+            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
+                        std_out.round().astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
         else:
-            comp_out = comp_result.compute()
+            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
+                        comp_result.compute().astype(np.uint8), template_path, nodata=QA_FILL)
 
-        out_file = os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif")
-        saveGeoTiff(out_file, comp_out.astype(np.int16 if band != "Fmask" else np.uint8), 
-                    template_file=template_path, access_type=access_type)
-
-    # 6. Metadata and Valid Count
-    valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8)
-    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), 
-                valid_count.compute(), template_file=template_path)
-
-    doy_values = np.array([int(datetime.strptime(os.path.basename(p).split('.')[3][:7], "%Y%j").strftime("%j")) 
-                           for p in granule_df.granule_path])
-    start_doy = int(start_date_doy.strftime("%j"))
+    # Valid Count and DOY
+    valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8).compute()
+    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), valid_count, template_path)
     
-    doy_stack = da.from_array(doy_values[:, None, None], chunks=(1, 512, 512))
-    best_doy = da.choose(best_idx, doy_stack)
-    relative_doy = da.where(all_nan_mask, 0, (best_doy - start_doy + 1)).astype(np.uint8)
-    
-    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), 
-                relative_doy.compute(), template_file=template_path)
-    return True
+    doy_vals = np.array([int(datetime.strptime(os.path.basename(p).split('.')[3][:7], "%Y%j").strftime("%j")) for p in granule_df.granule_path])
+    best_doy = da.choose(best_idx, da.from_array(doy_vals[:, None, None], chunks=(1, 1830, 1830)))
+    rel_doy = da.where(all_nan_mask, 0, (best_doy - int(start_dt.strftime("%j")) + 1)).astype(np.uint8).compute()
+    saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), rel_doy, template_path)
 
 
-def run(tile: str, start_date, end_date, stat: str, save_dir: str, search_source="STAC", access_type="direct", percentile_value=50):
-    n_retries = 3
-    delay = 5  # seconds
-    for attempt in range(n_retries):
+def run(**kwargs):
+    for i in range(3):
         try:
-            return composite(
-                            tile=tile,
-                            start_date=start_date,
-                            end_date=end_date,
-                            stat=stat,
-                            percentile_value=percentile_value,
-                            save_dir=save_dir,
-                            search_source=search_source,
-                            access_type=access_type,
-                            )
+            composite(**kwargs)
+            return
         except Exception as e:
-            if attempt < n_retries - 1:
-                wait_time = delay 
-                logger.warning(
-                    f"{tile} {start_date} {end_date} attempt {attempt + 1}/{n_retries} failed: {e}. "
-                    f"Retrying in {wait_time} seconds..."
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"All {n_retries} attempts failed for {tile} {start_date} {end_date}. Last error: {e}"
-                )
-                return None
+            logger.warning(f"Attempt {i+1} failed: {e}")
+            time.sleep(5)
     
 
 if __name__ == "__main__":
-    parse = argparse.ArgumentParser(
-        description="Queries the HLS STAC geoparquet archive and create composite images"
-    )
-    parse.add_argument(
-        "--tile",
-        help="MGRS tile id, e.g. 15XYZ",
-        required=True,
-        type=str,
-    )
-    parse.add_argument(
-        "--start_date",
-        help="start date in ISO format (e.g., 2024-01-01)",
-        required=True,
-        type=str,
-    )
-    parse.add_argument(
-        "--end_date",
-        help="end date in ISO format (e.g., 2024-12-31)",
-        required=True,
-        type=str,
-    )
-    parse.add_argument(
-        "--stat",
-        help="min, max, or percentile",
-        type=str,
-        default="max",
-    )
-    parse.add_argument(
-        "--percentile_value",
-        help="percentile value (0-100) if stat is percentile",
-        type=int,
-        default=50,
-    )
-    parse.add_argument(
-        "--output_dir", 
-        help="Directory in which to save output", 
-        required=True
-    )
-    parse.add_argument(
-        "--search_source",
-        help="Either STAC or earthaccess to search for HLS granules",
-        type=str,
-        default="earthaccess",
-    )
-    parse.add_argument(
-        "--access_type",
-        help="Either external (from http) or direct (from S3) to search for HLS granules",
-        type=str,
-        default="direct",
-    )
-    args = parse.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tile", required=True)
+    parser.add_argument("--start_date", required=True)
+    parser.add_argument("--end_date", required=True)
+    parser.add_argument("--stat", default="max")
+    parser.add_argument("--percentile_value", type=int, default=50)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--search_source", default="STAC")
+    parser.add_argument("--access_type", default="direct")
+    args = parser.parse_args()
 
-    output_dir = Path(args.output_dir)
-
-    logger.info(
-        f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
-    )
     os.environ.update(GDAL_CONFIG)
-
-    logger.info(
-        f"running with mgrs_tile: {args.tile}, start_datetime: {args.start_date}, end_datetime: {args.end_date}"
-    )
-
-    run(
-        tile=args.tile,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        stat=args.stat,
-        percentile_value=int(args.percentile_value),
-        save_dir=output_dir,
-        search_source=args.search_source,
-        access_type=args.access_type,
-    )
+    run(tile=args.tile, start_date=args.start_date, end_date=args.end_date, stat=args.stat, 
+        save_dir=args.output_dir,search_source=args.search_source, access_type=args.access_type, percentile_value=args.percentile_value)
