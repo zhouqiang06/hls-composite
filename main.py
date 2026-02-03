@@ -477,7 +477,7 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
 def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    granule_df = find_all_granules(tile, start_date, end_date, access_type)
+    granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, access_type=access_type)
     
     if len(granule_df) == 0: return
     
