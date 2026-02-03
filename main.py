@@ -241,10 +241,7 @@ def saveGeoTiff(filename, data, template_file, access_type="direct", nodata=None
             
             # Set metadata tags for scale factor
             if scale is not None:
-                # dst.update_tags(1, Scale=scale)
-                dst.update_tags(1, scale_factor=scale)
-                # dst.update_tags(1, SCALEOFFSET=0.0, SCALER=scale)
-                dst.set_band_unit(1, 'reflectance')
+                dst._set_all_scales([scale] * nband)
 
 
 def get_stac_items(
