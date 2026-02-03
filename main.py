@@ -481,9 +481,6 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     os.makedirs(out_dir, exist_ok=True)
 
     if len(granule_df) == 0: 
-        file_path = os.path.join(out_dir, "No granules found")
-        with open(file_path, 'w') as f:
-            pass
         return
     
     band_stack_dict = {}
@@ -494,27 +491,30 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
 
     fmask_stack = band_stack_dict["Fmask"]
 
-    # 1. Define Basic Quality Masks (Cloud, Shadow, No Data)
+    # 1. Basic Quality Mask (Cloud, Shadow, No Data)
     basic_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
                   ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
                   ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
                   (fmask_stack == QA_FILL))
 
-    # 2. Aerosol Logic: identify High Aerosol pixels
-    # High Aerosol: Bit 6 (Low) and Bit 7 (High) are both 1
+    # 2. Identify Negative Values across spectral bands
+    # We check if any of the main spectral bands have negative values (noise/artifacts)
+    is_negative = (band_stack_dict["Red"] < 0) | (band_stack_dict["NIR_Narrow"] < 0) | \
+                  (band_stack_dict["Blue"] < 0) | (band_stack_dict["Green"] < 0) | \
+                  (band_stack_dict["SWIR1"] < 0) | (band_stack_dict["SWIR2"] < 0)
+
+
+    # 3. Aerosol Logic: High Aerosol bits
     is_high_aerosol = ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)
     
-    # Low/Moderate Aerosol: Pixels that are NOT high aerosol but have data (not fill)
-    is_better_aerosol = ~is_high_aerosol & ~basic_mask
-    
-    # Check across the stack: for each pixel (x,y), are there ANY observations with low/mod aerosol?
-    any_better_available = da.any(is_better_aerosol, axis=0)
+    # 4. Define "Quality" observations (not high aerosol and NOT negative)
+    is_good_quality = ~is_high_aerosol & ~is_negative & ~basic_mask
+    any_good_available = da.any(is_good_quality, axis=0)
 
-    # 3. Final Mask:
-    # A pixel is "bad" if:
-    # - It's a cloud/shadow/fill
-    # - OR it's high aerosol AND there is at least one better (low/mod) observation available for that pixel
-    bad_pixel_mask = basic_mask | (is_high_aerosol & any_better_available)
+    # 5. Final Composite Mask:
+    # Exclude an observation if it is cloud/shadow OR if it is (high aerosol OR negative) 
+    # but there's a better observation available for that pixel.
+    bad_pixel_mask = basic_mask | ((is_high_aerosol | is_negative) & any_good_available)
     
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
@@ -528,8 +528,8 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
         evi_f[mask] = np.nan
         with np.errstate(all='ignore'):
             if stat_type == 'max': target = np.nanmax(evi_f, axis=0)
-            elif stat_type == 'min': target = np.nanmin(evi_f, axis=0)
-            else: target = np.nanmedian(evi_f, axis=0) 
+            elif stat_type == 'median': target = np.nanmedian(evi_f, axis=0) 
+            else: return
             
             diff = np.abs(evi_f - target)
             diff[np.isnan(diff)] = 1e9
@@ -559,6 +559,7 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
             std_lazy = da.map_blocks(_safe_std, current_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
             comp_out, std_out = da.compute(comp_result, std_lazy)
             
+            # Save using the improved metadata-aware function
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
                         comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
@@ -575,6 +576,8 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     best_doy = da.choose(best_idx, da.from_array(doy_vals[:, None, None], chunks=(1, 1830, 1830)))
     rel_doy = da.where(all_nan_mask, 0, (best_doy - int(start_dt.strftime("%j")) + 1)).astype(np.uint8).compute()
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), rel_doy, template_path)
+
+
 
 def run(**kwargs):
     for i in range(3):
