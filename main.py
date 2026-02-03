@@ -241,7 +241,8 @@ def saveGeoTiff(filename, data, template_file, access_type="direct", nodata=None
             
             # Set metadata tags for scale factor
             if scale is not None:
-                dst.update_tags(1, SCALEOFFSET=0.0, SCALER=scale)
+                dst.update_tags(1, Scale=scale)
+                # dst.update_tags(1, SCALEOFFSET=0.0, SCALER=scale)
                 dst.set_band_unit(1, 'reflectance')
 
 
@@ -542,12 +543,12 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
             comp_out, std_out = da.compute(comp_result, std_lazy)
             
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_out.astype(np.int16), template_path, nodata=-9999, scale=0.0001)
+                        comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
-                        std_out.round().astype(np.int16), template_path, nodata=-9999, scale=0.0001)
+                        std_out.round().astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
         else:
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_result.compute().astype(np.uint8), template_path, nodata=255)
+                        comp_result.compute().astype(np.uint8), template_path, nodata=QA_FILL)
 
     # Valid Count and DOY
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8).compute()
