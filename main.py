@@ -472,7 +472,6 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
     return pd.DataFrame({"Date": date_list, "Sat": sat_list, "granule_path": url_list})
 
 
-
 def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -494,13 +493,32 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
         band_stack_dict[band] = da.stack([fetch_with_retry(u, access_type=access_type) for u in urls], axis=0)
 
     fmask_stack = band_stack_dict["Fmask"]
-    bad_pixel_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
-                      ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
-                      ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
-                      (((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)) | # high aerosol
-                      (fmask_stack == QA_FILL))
+
+    # 1. Define Basic Quality Masks (Cloud, Shadow, No Data)
+    basic_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
+                  ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
+                  ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
+                  (fmask_stack == QA_FILL))
+
+    # 2. Aerosol Logic: identify High Aerosol pixels
+    # High Aerosol: Bit 6 (Low) and Bit 7 (High) are both 1
+    is_high_aerosol = ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)
+    
+    # Low/Moderate Aerosol: Pixels that are NOT high aerosol but have data (not fill)
+    is_better_aerosol = ~is_high_aerosol & ~basic_mask
+    
+    # Check across the stack: for each pixel (x,y), are there ANY observations with low/mod aerosol?
+    any_better_available = da.any(is_better_aerosol, axis=0)
+
+    # 3. Final Mask:
+    # A pixel is "bad" if:
+    # - It's a cloud/shadow/fill
+    # - OR it's high aerosol AND there is at least one better (low/mod) observation available for that pixel
+    bad_pixel_mask = basic_mask | (is_high_aerosol & any_better_available)
+    
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
+    # Calculate EVI2 for selection
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
     evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
@@ -511,7 +529,7 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
         with np.errstate(all='ignore'):
             if stat_type == 'max': target = np.nanmax(evi_f, axis=0)
             elif stat_type == 'min': target = np.nanmin(evi_f, axis=0)
-            else: target = np.nanmedian(evi_f, axis=0) # Default to median
+            else: target = np.nanmedian(evi_f, axis=0) 
             
             diff = np.abs(evi_f - target)
             diff[np.isnan(diff)] = 1e9
