@@ -497,6 +497,7 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     bad_pixel_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
                       ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
                       ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
+                      (((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)) | # high aerosol
                       (fmask_stack == QA_FILL))
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
