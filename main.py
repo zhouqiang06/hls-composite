@@ -474,10 +474,10 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
 
 
 
-def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", access_type="direct", percentile_value=50):
+def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    granule_df = find_all_granules(tile, start_date, end_date, search_source=search_source, access_type)
+    granule_df = find_all_granules(tile, start_date, end_date, access_type)
     
     if len(granule_df) == 0: return
     
@@ -497,19 +497,18 @@ def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", 
                       (fmask_stack == QA_FILL))
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
-    # Calculate EVI2 for indexing
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
     evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
 
-    def _get_best_index(evi, mask, all_nan, stat_type, p_val):
+    def _get_best_index(evi, mask, all_nan, stat_type):
         evi_f = evi.copy()
         evi_f[mask] = np.nan
         with np.errstate(all='ignore'):
             if stat_type == 'max': target = np.nanmax(evi_f, axis=0)
             elif stat_type == 'min': target = np.nanmin(evi_f, axis=0)
-            elif stat_type == 'median': target = np.nanmedian(evi_f, axis=0)
-            else: target = np.nanquantile(evi_f, p_val / 100.0, axis=0)
+            else: target = np.nanmedian(evi_f, axis=0) # Default to median
+            
             diff = np.abs(evi_f - target)
             diff[np.isnan(diff)] = 1e9
             idx = np.argmin(diff, axis=0)
@@ -517,7 +516,7 @@ def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", 
             return idx.astype(np.int16)
 
     best_idx = da.map_blocks(_get_best_index, evi2_stack, bad_pixel_mask, all_nan_mask, 
-                             stat_type=stat, p_val=percentile_value, drop_axis=0, dtype=np.int16)
+                             stat_type=stat, drop_axis=0, dtype=np.int16)
 
     template_path = granule_df.iloc[0]["granule_path"]
 
@@ -538,15 +537,13 @@ def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", 
             std_lazy = da.map_blocks(_safe_std, current_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
             comp_out, std_out = da.compute(comp_result, std_lazy)
             
-            # Save spectral band with scale and nodata
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
-            # Save STD as int16 with scale and nodata
+                        comp_out.astype(np.int16), template_path, nodata=-9999, scale=0.0001)
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
-                        std_out.round().astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
+                        std_out.round().astype(np.int16), template_path, nodata=-9999, scale=0.0001)
         else:
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_result.compute().astype(np.uint8), template_path, nodata=QA_FILL)
+                        comp_result.compute().astype(np.uint8), template_path, nodata=255)
 
     # Valid Count and DOY
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8).compute()
@@ -556,7 +553,6 @@ def composite(tile, start_date, end_date, stat, save_dir, search_source="STAC", 
     best_doy = da.choose(best_idx, da.from_array(doy_vals[:, None, None], chunks=(1, 1830, 1830)))
     rel_doy = da.where(all_nan_mask, 0, (best_doy - int(start_dt.strftime("%j")) + 1)).astype(np.uint8).compute()
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), rel_doy, template_path)
-
 
 def run(**kwargs):
     for i in range(3):
@@ -574,12 +570,10 @@ if __name__ == "__main__":
     parser.add_argument("--start_date", required=True)
     parser.add_argument("--end_date", required=True)
     parser.add_argument("--stat", default="max")
-    parser.add_argument("--percentile_value", type=int, default=50)
     parser.add_argument("--output_dir", required=True)
-    parser.add_argument("--search_source", default="STAC")
     parser.add_argument("--access_type", default="direct")
     args = parser.parse_args()
 
     os.environ.update(GDAL_CONFIG)
     run(tile=args.tile, start_date=args.start_date, end_date=args.end_date, stat=args.stat, 
-        save_dir=args.output_dir,search_source=args.search_source, access_type=args.access_type, percentile_value=args.percentile_value)
+        save_dir=args.output_dir, access_type=args.access_type)
