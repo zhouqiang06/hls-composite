@@ -6,22 +6,35 @@ disk_space: 64GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
 inputs:
   config: []
+  file: []
   positional:
   - default: ''
-    description: MGRS tile identifier (e.g. 15TYK)
-    name: mgrs_tile
+    description: MGRS tile ID
+    name: tile
     required: true
   - default: ''
-    description: start datetime for HLS STAC query in YYYY-mm-ddTHH:MM:SSZ format
+    description: e.g. 2024-01-01
     name: start_date
     required: true
   - default: ''
-    description: end datetime for HLS STAC query in YYYY-mm-ddTHH:MM:SSZ format
+    description: e.g. 2024-01-01
     name: end_date
     required: true
-  - default: ''
-    description: Either STAC or earthaccess to search for HLS granules
+  - default: max
+    description: min, max, or median
+    name: stat
+    required: false
+  - default: '50'
+    description: 0-100 if stat is percentile
+    name: percentile_value
+    required: false
+  - default: STAC
+    description: STAC or earthaccess
     name: search_source
+    required: false
+  - default: direct
+    description: Either external (from http) or direct (from S3)
+    name: access_type
     required: false
 queue: maap-dps-worker-64gb
 repository_url: https://github.com/zhouqiang06/hls-composite
