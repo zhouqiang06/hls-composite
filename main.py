@@ -479,11 +479,15 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, access_type=access_type)
     
-    if len(granule_df) == 0: return
-    
     out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_dt.strftime('%Y%j')}.{end_dt.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
 
+    if len(granule_df) == 0: 
+        file_path = os.path.join(out_dir, "No granules found")
+        with open(file_path, 'w') as f:
+            pass
+        return
+    
     band_stack_dict = {}
     for band in common_bands:
         urls = [row.granule_path.replace("Fmask", (L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index)[band]) 
