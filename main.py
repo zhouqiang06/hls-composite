@@ -475,12 +475,16 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
 def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    
     granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, access_type=access_type)
     
     out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_dt.strftime('%Y%j')}.{end_dt.strftime('%Y%j')}.2.0")
     os.makedirs(out_dir, exist_ok=True)
-
+    
     if len(granule_df) == 0: 
+        logger.warning(f"No granules found for {tile}. Creating empty indicator file.")
+        with open(os.path.join(out_dir, "No granules found"), 'w') as f:
+            pass
         return
     
     band_stack_dict = {}
@@ -490,31 +494,35 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
         band_stack_dict[band] = da.stack([fetch_with_retry(u, access_type=access_type) for u in urls], axis=0)
 
     fmask_stack = band_stack_dict["Fmask"]
-
-    # 1. Basic Quality Mask (Cloud, Shadow, No Data)
-    basic_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
-                  ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
-                  ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
-                  (fmask_stack == QA_FILL))
-
-    # 2. Identify Negative Values across spectral bands
-    # We check if any of the main spectral bands have negative values (noise/artifacts)
+    
+    # 1. Negative Values Check (Exclude in all cases)
     is_negative = (band_stack_dict["Red"] < 0) | (band_stack_dict["NIR_Narrow"] < 0) | \
                   (band_stack_dict["Blue"] < 0) | (band_stack_dict["Green"] < 0) | \
                   (band_stack_dict["SWIR1"] < 0) | (band_stack_dict["SWIR2"] < 0)
 
+    # 2. Basic Quality Mask (Cloud, Shadow, No Data, or Negative)
+    basic_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
+                  ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
+                  ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
+                  (fmask_stack == QA_FILL) |
+                  is_negative)
 
-    # 3. Aerosol Logic: High Aerosol bits
+    # 3. Aerosol Identification
+    # High Aerosol: both bits 6 and 7 are set
     is_high_aerosol = ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)
     
-    # 4. Define "Quality" observations (not high aerosol and NOT negative)
-    is_good_quality = ~is_high_aerosol & ~is_negative & ~basic_mask
-    any_good_available = da.any(is_good_quality, axis=0)
+    # Low/Moderate Aerosol: Neither cloud/shadow/negative AND not high aerosol
+    is_low_mod_aerosol = ~is_high_aerosol & ~basic_mask
+    
+    # Check if ANY low/moderate aerosol observations exist for each pixel in the stack
+    any_low_mod_available = da.any(is_low_mod_aerosol, axis=0)
 
-    # 5. Final Composite Mask:
-    # Exclude an observation if it is cloud/shadow OR if it is (high aerosol OR negative) 
-    # but there's a better observation available for that pixel.
-    bad_pixel_mask = basic_mask | ((is_high_aerosol | is_negative) & any_good_available)
+    # 4. Final Composite Masking Logic:
+    # Always exclude basic_mask (clouds, shadows, negatives).
+    # Exclude high aerosol observations IF there is at least one low/mod observation available.
+    # The logic ensures that high aerosol pixels are treated as "bad" (masked out) as long as there is at least one "good" pixel (clear and low/mod aerosol) available in the temporal stack. 
+    # If no low/mod aerosol pixels exist for that coordinate, the high aerosol pixel is allowed through to prevent data holes.
+    bad_pixel_mask = basic_mask | (is_high_aerosol & any_low_mod_available)
     
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
@@ -527,12 +535,16 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
         evi_f = evi.copy()
         evi_f[mask] = np.nan
         with np.errstate(all='ignore'):
-            if stat_type == 'max': target = np.nanmax(evi_f, axis=0)
-            elif stat_type == 'median': target = np.nanmedian(evi_f, axis=0) 
-            else: return
+            if stat_type == 'max': 
+                target = np.nanmax(evi_f, axis=0)
+            elif stat_type == 'median': 
+                target = np.nanmedian(evi_f, axis=0) 
+            else: 
+                return
             
             diff = np.abs(evi_f - target)
             diff[np.isnan(diff)] = 1e9
+            
             idx = np.argmin(diff, axis=0)
             idx[all_nan] = 0
             return idx.astype(np.int16)
@@ -559,7 +571,6 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
             std_lazy = da.map_blocks(_safe_std, current_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
             comp_out, std_out = da.compute(comp_result, std_lazy)
             
-            # Save using the improved metadata-aware function
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
                         comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
             saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
@@ -573,10 +584,10 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), valid_count, template_path)
     
     doy_vals = np.array([int(datetime.strptime(os.path.basename(p).split('.')[3][:7], "%Y%j").strftime("%j")) for p in granule_df.granule_path])
-    best_doy = da.choose(best_idx, da.from_array(doy_vals[:, None, None], chunks=(1, 1830, 1830)))
+    doy_stack = da.from_array(doy_vals[:, None, None], chunks=(len(doy_vals), 1830, 1830))
+    best_doy = da.choose(best_idx, doy_stack)
     rel_doy = da.where(all_nan_mask, 0, (best_doy - int(start_dt.strftime("%j")) + 1)).astype(np.uint8).compute()
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), rel_doy, template_path)
-
 
 
 def run(**kwargs):
