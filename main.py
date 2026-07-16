@@ -29,6 +29,7 @@ import dask.array as da
 
 from maap.maap import MAAP
 from pystac import Asset, Catalog, CatalogType, Item
+from botocore.config import Config
 from rasterio.session import AWSSession
 from rustac import DuckdbClient
 
