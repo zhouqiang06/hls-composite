@@ -305,7 +305,7 @@ def fetch_single_asset(
     """
     try:
         # Get session from credential manager if using direct bucket access
-        rasterio_env = {}
+        rasterio_env = {"CPL_DEBUG": True}
         if direct_bucket_access:
             rasterio_env["session"] = _credential_manager.get_session()
 
