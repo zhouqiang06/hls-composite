@@ -34,11 +34,11 @@ from rasterio.session import AWSSession
 from rustac import DuckdbClient
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("HLSComposite")
-logging.setLevel(logging.DEBUG)
+# logging.setLevel(logging.DEBUG)
 
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
