@@ -38,6 +38,7 @@ logging.basicConfig(
 )
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logger = logging.getLogger("HLSComposite")
+log.setLevel(logging.DEBUG)
 
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
