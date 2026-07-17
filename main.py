@@ -86,9 +86,9 @@ class CredentialManager:
                 logger.info("fetching/refreshing S3 credentials")
                 self._credentials = self._fetch_credentials()
                 self._fetch_time = now
-                # self._session = AWSSession(**self._credentials)
-                s3_config = Config(signature_version='s3v4') # Define config with requester_pays enabled s3={'requester_pays': True}
-                self._session = AWSSession(aws_config=s3_config, **self._credentials)
+                self._session = AWSSession(**self._credentials)
+                # s3_config = Config(signature_version='s3v4') # Define config with requester_pays enabled s3={'requester_pays': True}
+                # self._session = AWSSession(aws_config=s3_config, **self._credentials)
 
             return self._session
 
