@@ -476,21 +476,24 @@ def find_all_granules(tile: str, bandnum: int, start_date: str, end_date: str, s
     return pd.DataFrame({"Date": date_list, "Sat": sat_list, "granule_path": url_list})
 
 
-def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
+def composite(tile, start_date, end_date, save_dir, access_type="direct"):
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     
-    granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, access_type=access_type)
-    
-    out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_dt.strftime('%Y%j')}.{end_dt.strftime('%Y%j')}.2.0")
-    os.makedirs(out_dir, exist_ok=True)
+    granule_df = find_all_granules(tile=tile, bandnum=8, start_date=start_date, end_date=end_date, search_source="earthaccess", access_type=access_type)
     
     if len(granule_df) == 0: 
         logger.warning(f"No granules found for {tile}. Creating empty indicator file.")
         with open(os.path.join(out_dir, "No granules found"), 'w') as f:
             pass
         return
+
+    # Ensure chronological order
+    granule_df = granule_df.sort_values(by="Date", ascending=True).reset_index(drop=True)
+    out_dir = os.path.join(save_dir, tile, start_date[:4], f"HLS.M30.T{tile}.{start_dt.strftime('%Y%j')}.{end_dt.strftime('%Y%j')}.2.0")
+    os.makedirs(out_dir, exist_ok=True)
     
+    # 1. Fetch bands into stacks
     band_stack_dict = {}
     for band in common_bands:
         urls = [row.granule_path.replace("Fmask", (L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index)[band]) 
@@ -499,53 +502,42 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
 
     fmask_stack = band_stack_dict["Fmask"]
     
-    # 1. Negative Values Check (Exclude in all cases)
+    # 2. Quality Masking Logic
     is_negative = (band_stack_dict["Red"] < 0) | (band_stack_dict["NIR_Narrow"] < 0) | \
                   (band_stack_dict["Blue"] < 0) | (band_stack_dict["Green"] < 0) | \
                   (band_stack_dict["SWIR1"] < 0) | (band_stack_dict["SWIR2"] < 0)
 
-    # 2. Basic Quality Mask (Cloud, Shadow, No Data, or Negative)
     basic_mask = (((fmask_stack & (1 << QA_BIT['cloud'])) > 0) | 
                   ((fmask_stack & (1 << QA_BIT['adj_cloud'])) > 0) | 
                   ((fmask_stack & (1 << QA_BIT['cloud shadow'])) > 0) |
                   (fmask_stack == QA_FILL) |
                   is_negative)
 
-    # 3. Aerosol Identification
-    # High Aerosol: both bits 6 and 7 are set
     is_high_aerosol = ((fmask_stack & (1 << QA_BIT['aerosol_h'])) > 0) & ((fmask_stack & (1 << QA_BIT['aerosol_l'])) > 0)
-    
-    # Low/Moderate Aerosol: Neither cloud/shadow/negative AND not high aerosol
     is_low_mod_aerosol = ~is_high_aerosol & ~basic_mask
-    
-    # Check if ANY low/moderate aerosol observations exist for each pixel in the stack
     any_low_mod_available = da.any(is_low_mod_aerosol, axis=0)
 
-    # 4. Final Composite Masking Logic:
-    # Always exclude basic_mask (clouds, shadows, negatives).
-    # Exclude high aerosol observations IF there is at least one low/mod observation available.
-    # The logic ensures that high aerosol pixels are treated as "bad" (masked out) as long as there is at least one "good" pixel (clear and low/mod aerosol) available in the temporal stack. 
-    # If no low/mod aerosol pixels exist for that coordinate, the high aerosol pixel is allowed through to prevent data holes.
     bad_pixel_mask = basic_mask | (is_high_aerosol & any_low_mod_available)
-    
     all_nan_mask = da.all(bad_pixel_mask, axis=0)
 
-    # Calculate EVI2 for selection
+    # 3. Compute Spectral Index Stacks (Floats scaled)
+    blue = band_stack_dict["Blue"].astype(np.float32) * sr_scale
     red = band_stack_dict["Red"].astype(np.float32) * sr_scale
     nir = band_stack_dict["NIR_Narrow"].astype(np.float32) * sr_scale
-    evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
+    swir2 = band_stack_dict["SWIR2"].astype(np.float32) * sr_scale
 
-    def _get_best_index(evi, mask, all_nan, stat_type):
+    with np.errstate(all='ignore'):
+        evi2_stack = 2.5 * (nir - red) / (nir + 2.4 * red + 1.0)
+        ndvi_stack = (nir - red) / (nir + red + 1e-6)
+        evi_stack = 2.5 * (nir - red) / (nir + 6.0 * red - 7.5 * blue + 1.0)
+        nbr_stack = (nir - swir2) / (nir + swir2 + 1e-6)
+
+    # 4. Helper function to find pixel index closest to median EVI2
+    def _get_median_index(evi, mask, all_nan):
         evi_f = evi.copy()
         evi_f[mask] = np.nan
         with np.errstate(all='ignore'):
-            if stat_type == 'max': 
-                target = np.nanmax(evi_f, axis=0)
-            elif stat_type == 'median': 
-                target = np.nanmedian(evi_f, axis=0) 
-            else: 
-                return
-            
+            target = np.nanmedian(evi_f, axis=0)
             diff = np.abs(evi_f - target)
             diff[np.isnan(diff)] = 1e9
             
@@ -553,37 +545,39 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
             idx[all_nan] = 0
             return idx.astype(np.int16)
 
-    best_idx = da.map_blocks(_get_best_index, evi2_stack, bad_pixel_mask, all_nan_mask, 
-                             stat_type=stat, drop_axis=0, dtype=np.int16)
+    best_idx = da.map_blocks(_get_median_index, evi2_stack, bad_pixel_mask, all_nan_mask, 
+                             drop_axis=0, dtype=np.int16)
+
+    # Helper function for safe standard deviation computation
+    def _safe_std(data, mask, all_nan):
+        data_f = data.astype(np.float32)
+        data_f[mask] = np.nan
+        with np.errstate(all='ignore'):
+            res = np.nanstd(data_f, axis=0)
+            res[all_nan] = 0
+            return res
 
     template_path = granule_df.iloc[0]["granule_path"]
 
-    for band in common_bands:
-        logger.info(f"Processing: {band}")
-        current_stack = band_stack_dict[band]
-        comp_result = da.where(all_nan_mask, (QA_FILL if band=="Fmask" else SR_FILL), da.choose(best_idx, current_stack))
+    # 5. Process and export NDVI, EVI, NBR (Median + Temporal StdDev)
+    index_stacks = {"NDVI": ndvi_stack, "EVI": evi_stack, "NBR": nbr_stack}
 
-        if band != "Fmask":
-            def _safe_std(data, mask, all_nan):
-                data_f = data.astype(np.float32)
-                data_f[mask] = np.nan
-                with np.errstate(all='ignore'):
-                    res = np.nanstd(data_f, axis=0)
-                    res[all_nan] = 0
-                    return res
-            
-            std_lazy = da.map_blocks(_safe_std, current_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
-            comp_out, std_out = da.compute(comp_result, std_lazy)
-            
-            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_out.astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
-            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.std.tif"), 
-                        std_out.round().astype(np.int16), template_path, nodata=SR_FILL, scale=sr_scale)
-        else:
-            saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{band}.tif"), 
-                        comp_result.compute().astype(np.uint8), template_path, nodata=QA_FILL)
+    for idx_name, idx_stack in index_stacks.items():
+        logger.info(f"Processing index: {idx_name}")
+        
+        comp_result = da.where(all_nan_mask, SR_FILL, da.choose(best_idx, idx_stack))
+        std_lazy = da.map_blocks(_safe_std, idx_stack, bad_pixel_mask, all_nan_mask, drop_axis=0, dtype=np.float32)
+        
+        comp_out, std_out = da.compute(comp_result, std_lazy)
+        
+        # Scale to integer (-10000 to 10000) for storage
+        comp_int = np.where(all_nan_mask, SR_FILL, np.round(comp_out * 10000)).astype(np.int16)
+        std_int = np.where(all_nan_mask, SR_FILL, np.round(std_out * 10000)).astype(np.int16)
 
-    # Valid Count and DOY
+        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.tif"), comp_int, template_path, nodata=SR_FILL)
+        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.std.tif"), std_int, template_path, nodata=SR_FILL)
+
+    # 6. Valid Count and DOY Metadata
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8).compute()
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.ValidCount.tif"), valid_count, template_path)
     
@@ -592,7 +586,6 @@ def composite(tile, start_date, end_date, stat, save_dir, access_type="direct"):
     best_doy = da.choose(best_idx, doy_stack)
     rel_doy = da.where(all_nan_mask, 0, (best_doy - int(start_dt.strftime("%j")) + 1)).astype(np.uint8).compute()
     saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.DOY.tif"), rel_doy, template_path)
-
 
 def run(**kwargs):
     for i in range(3):
@@ -609,11 +602,10 @@ if __name__ == "__main__":
     parser.add_argument("--tile", required=True)
     parser.add_argument("--start_date", required=True)
     parser.add_argument("--end_date", required=True)
-    parser.add_argument("--stat", default="max")
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--access_type", default="direct")
     args = parser.parse_args()
 
     os.environ.update(GDAL_CONFIG)
-    run(tile=args.tile, start_date=args.start_date, end_date=args.end_date, stat=args.stat, 
+    run(tile=args.tile, start_date=args.start_date, end_date=args.end_date,
         save_dir=args.output_dir, access_type=args.access_type)
