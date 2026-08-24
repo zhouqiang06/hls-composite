@@ -55,7 +55,7 @@ cmd=(
     --tile "${tile}"
     --start_date "${start_date}"
     --end_date "${end_date}"
-    --stat "${stat}"
+    # --stat "${stat}"
     # --percentile_value "${percentile_value}"
     --output_dir "${OUTPUT_DIR}"
     # --search_source "${search_source}"
