@@ -20,10 +20,6 @@ inputs:
     description: e.g. 2024-01-01
     name: end_date
     required: true
-  - default: max
-    description: min, max, or median
-    name: stat
-    required: false
   - default: direct
     description: Either external (from http) or direct (from S3)
     name: access_type
