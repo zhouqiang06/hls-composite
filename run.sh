@@ -35,10 +35,10 @@ fi
 tile="$1"
 start_date="$2"
 end_date="$3"
-stat="$4"
+# stat="$4"
 # percentile_value="$5"
 # search_source="$6"
-access_type="$5"
+access_type="$4"
 
 # Call the script using the absolute paths
 # Use the updated environment when calling 'uv run'
