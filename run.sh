@@ -26,7 +26,7 @@ OUTPUT_DIR=output
 # input_filename=$(ls -d input/*)
 
 # Parse positional arguments (3 required, 2 optional)
-if [[ $# -lt 3 ]] || [[ $# -gt 8 ]]; then
+if [[ $# -lt 3 ]] || [[ $# -gt 4 ]]; then
     echo "Error: Expected 4-6 arguments, got $#"
     echo "Usage: $0 <mgrs_tile> <start_date> <end_date> <access_type>"
     exit 1
