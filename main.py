@@ -123,6 +123,7 @@ FMASK_NODATA = 255
 sr_scale = 0.0001
 ang_scale = 0.01
 SR_FILL = -9999
+VI_FILL = -19_999
 QA_FILL = 255 #FMASK_FILL
 
 common_bands = ["Blue","Green","Red","NIR_Narrow","SWIR1", "SWIR2", "Fmask"]
@@ -571,11 +572,11 @@ def composite(tile, start_date, end_date, save_dir, access_type="direct"):
         comp_out, std_out = da.compute(comp_result, std_lazy)
         
         # Scale to integer (-10000 to 10000) for storage
-        comp_int = np.where(all_nan_mask, SR_FILL, np.round(comp_out * 10000)).astype(np.int16)
-        std_int = np.where(all_nan_mask, SR_FILL, np.round(std_out * 10000)).astype(np.int16)
+        comp_int = np.where(all_nan_mask, SR_FILL, np.clip(np.round(comp_out * 10000), -10000, 10000)).astype(np.int16)
+        std_int = np.where(all_nan_mask, SR_FILL, np.clip(np.round(std_out * 10000), -10000, 10000)).astype(np.int16)
 
-        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.tif"), comp_int, template_path, nodata=SR_FILL)
-        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.std.tif"), std_int, template_path, nodata=SR_FILL)
+        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.tif"), comp_int, template_path, nodata=VI_FILL)
+        saveGeoTiff(os.path.join(out_dir, f"{os.path.basename(out_dir)}.{idx_name}.std.tif"), std_int, template_path, nodata=VI_FILL)
 
     # 6. Valid Count and DOY Metadata
     valid_count = da.sum(~bad_pixel_mask, axis=0).astype(np.uint8).compute()
